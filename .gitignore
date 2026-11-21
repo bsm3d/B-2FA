@@ -1,0 +1,16 @@
+# build output and caches
+build/
+dist/
+__pycache__/
+*.pyc
+*.spec
+
+# a third-party sample backup used by an optional test (see tests/test_core.py)
+tests/data/
+
+# design mockup with 2FAS logos embedded (their graphics are not free to redistribute)
+mockup/
+
+# never publish user data
+*.b2fa
+*.2fas
