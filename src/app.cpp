@@ -1064,7 +1064,7 @@ void App::openBackups() {
 
 void App::toggleSecureKeypad() {
     settings_.setSecureKeypad(!settings_.secureKeypad());
-    setStatus(settings_.secureKeypad() ? L"PIN entry: on-screen keypad, shuffled." : L"PIN entry: physical keyboard.");
+    setStatus(settings_.secureKeypad() ? L"PIN entry: always the shuffled on-screen keypad." : L"PIN entry: physical keyboard (keypad on demand).");
 }
 
 void App::toggleCaptureBlock() {
@@ -1085,7 +1085,7 @@ void App::moreMenu() {
     AppendMenuW(menu, MF_STRING, CMD_CHANGE_PW, L"Change master password...");
     AppendMenuW(menu, MF_STRING, CMD_SET_PIN, L"Set or change PIN...");
     AppendMenuW(menu, MF_STRING, CMD_REMOVE_PIN, L"Remove PIN");
-    AppendMenuW(menu, MF_STRING | (settings_.secureKeypad() ? MF_CHECKED : 0), CMD_SECURE_KEYPAD, L"On-screen keypad for the PIN");
+    AppendMenuW(menu, MF_STRING | (settings_.secureKeypad() ? MF_CHECKED : 0), CMD_SECURE_KEYPAD, L"Always use the keypad for the PIN");
     if (CaptureGuard::supported())
         AppendMenuW(menu, MF_STRING | ((guard_ && guard_->enabled()) ? MF_CHECKED : 0), CMD_BLOCK_CAPTURE, L"Block screen capture");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);

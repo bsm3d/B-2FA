@@ -14,7 +14,7 @@
 // PINs itself. The same malware could also read the screen and the keyboard, so the master password
 // remains the real protection. The PIN is a convenience for an unattended PC, not a second lock.
 //
-// The file format is the one of the Python edition: a PIN set by either opens in both.
+// The file format is the one of the earlier Python prototype of B-2FA: a PIN set by either opens in both.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

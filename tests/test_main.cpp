@@ -1,5 +1,5 @@
 // B-2FA core tests: crypto vectors from the RFCs, the vault, the 2FAS format, and files made by
-// the Python edition. Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
+// the earlier Python prototype. Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -401,13 +401,13 @@ static void test_pin_settings_keypad() {
     CHECK(!pins.enabled());
 
     Settings s(dir / "settings.json");
-    CHECK(s.secureKeypad());   // on by default
-    s.setSecureKeypad(false);
-    CHECK(!Settings(dir / "settings.json").secureKeypad());
-    writeFileSynced(dir / "settings.json", "{\"secure_keypad\": \"yes\"}");
-    CHECK(Settings(dir / "settings.json").secureKeypad());   // a wrong type is ignored
-    writeFileSynced(dir / "settings.json", "garbage");
+    CHECK(!s.secureKeypad());   // off by default: the PIN is typed on the keyboard, the keypad is on demand
+    s.setSecureKeypad(true);
     CHECK(Settings(dir / "settings.json").secureKeypad());
+    writeFileSynced(dir / "settings.json", "{\"secure_keypad\": \"yes\"}");
+    CHECK(!Settings(dir / "settings.json").secureKeypad());   // a wrong type is ignored
+    writeFileSynced(dir / "settings.json", "garbage");
+    CHECK(!Settings(dir / "settings.json").secureKeypad());
 
     // the shuffle: every key present once, and the order changes
     std::wstring digits = L"0123456789";
@@ -429,7 +429,7 @@ static void test_pin_settings_keypad() {
     fs::remove_all(dir);
 }
 
-// ---- files made by the Python edition -------------------------------------
+// ---- files made by the earlier Python prototype -------------------------------------
 static void test_python_interop() {
     fs::path vectors = VECTORS_DIR;
     fs::path dir = tempDir("interop");
@@ -439,7 +439,7 @@ static void test_python_interop() {
     CHECK(throws<WrongMasterPassword>([&] { v.unlock(S("not the python password")); }));
     v.unlock(S("python-made-pass-123"));
     CHECK_EQ(v.services.size(), size_t(4));
-    // the 2FAS file made by the Python edition
+    // the 2FAS file made by the Python prototype
     Json exported = twofas::decryptBackup(twofas::readBackup(vectors / "py_export.2fas"), S("python-export-pass"));
     CHECK_EQ(exported.get("services")->items().size(), size_t(4));
     // the same codes as Python computed at fixed times
@@ -473,7 +473,7 @@ static void test_python_interop() {
     fs::remove_all(dir);
 }
 
-// `b2tests --emit DIR` writes a vault and a .2fas made by this program, so the Python edition (or
+// `b2tests --emit DIR` writes a vault and a .2fas made by this program, so the Python prototype (or
 // any other reader) can check it opens them. Passwords: cpp-made-pass-1234 and cpp-export-pass-12.
 static int emitInteropFiles(const fs::path& dir) {
     fs::create_directories(dir);

@@ -10,13 +10,14 @@ class Settings {
 public:
     explicit Settings(std::filesystem::path path = {});   // empty: settings.json in the data folder
 
-    // Use the on-screen shuffled keypad to enter the PIN (default: yes).
+    // Always use the on-screen shuffled keypad to enter the PIN, and ignore the physical keyboard there
+    // (default: no, the PIN is typed on the keyboard and the keypad is a "Virtual keyboard" link away).
     bool secureKeypad() const { return secureKeypad_; }
     void setSecureKeypad(bool on);
 
 private:
     std::filesystem::path path_;
-    bool secureKeypad_ = true;
+    bool secureKeypad_ = false;
     void load();
     void save() const;
 };

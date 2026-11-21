@@ -60,7 +60,7 @@ void checkKdfParams(uint64_t n, uint64_t r, uint64_t p) {
 
 std::string aadFor(int version, uint64_t n, uint32_t r, uint32_t p, const std::string& salt) {
     if (version == 1) return "b2fa-vault-1";  // first release: constant associated data
-    // json.dumps(head, sort_keys=True, separators=(",", ":")) of the Python edition
+    // json.dumps(head, sort_keys=True, separators=(",", ":")) of the earlier Python prototype
     return std::string("{\"format\":\"") + kFormat + "\",\"kdf\":{\"n\":" + std::to_string(n) +
            ",\"name\":\"scrypt\",\"p\":" + std::to_string(p) + ",\"r\":" + std::to_string(r) + ",\"salt\":\"" + salt +
            "\"},\"version\":" + std::to_string(version) + "}";

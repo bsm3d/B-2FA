@@ -9,7 +9,7 @@
 // Anything that copies the old data (the .bak and the automatic backups) is purged when the
 // master password changes or an account is deleted, so a stale copy cannot outlive the change.
 //
-// The file format is the one of the Python edition of B-2FA: vaults made by either open in both.
+// The file format is the one of the earlier Python prototype of B-2FA: vaults made by either open in both.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

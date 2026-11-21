@@ -34,7 +34,7 @@ not at hand, and it can export a backup that the 2FAS phone app imports back.
   algorithm, digits, period) sit behind "Advanced options" because nearly every service uses the defaults.
 - Export an encrypted `.2fas` backup for the 2FAS phone app (long password required, different from the
   master password).
-- **On-screen shuffled keypad** for the PIN and the passwords, against keyloggers (see below).
+- **On-screen shuffled keypad** on demand for the PIN and the passwords, against keyloggers (see below).
 - Optional PIN (4 to 8 digits) for quick unlock on this PC.
 - Automatic backups of the vault, locking after 5 minutes of inactivity, and screen capture protection.
 - Service logos from the official 2FAS pack, installed on demand (see [Logos](#logos)).
@@ -46,8 +46,10 @@ not at hand, and it can export a backup that the 2FAS phone app imports back.
 A keylogger records the keys you press. B-2FA lets you enter the PIN, and any password, with the mouse on a
 keypad whose keys are in a random order:
 
-- The PIN keypad is shown by default. Its keys are reshuffled after **every** digit, and the physical
-  keyboard is ignored in the PIN field (you can switch this off in More > On-screen keypad for the PIN).
+- The PIN is typed on the keyboard by default. A "Virtual keyboard" link under the field shows the PIN
+  keypad whenever you want it (for example on a PC you do not trust): its keys are reshuffled after **every**
+  digit and the physical keyboard is ignored while it is shown. To use it every time, tick
+  More > Always use the keypad for the PIN.
 - Every password prompt has a "Virtual keyboard" link: three pages (lower case, upper case, digits and
   symbols), reshuffled each time a page is shown, with the physical keyboard switched off while it is open.
   Paste still works, so a password manager can fill the field.
@@ -160,16 +162,10 @@ For the program alone:
 About 280 checks: the RFC 4226, 6238, 4231 and 7914 vectors, a NIST AES-GCM vector, the JSON reader, the
 vault (create, unlock, change password, export, merge, damaged files, a vault changed behind its back),
 the 2FAS format, the PIN (attempt counting, wiping), the settings and the keypad shuffle. They also open
-files made by the first, Python edition of B-2FA (`tests/vectors`) and check that the codes match.
+files made by an earlier Python prototype of B-2FA (`tests/vectors`) and check that the codes match.
 
 The backup format is the one of the 2FAS apps ([github.com/twofas](https://github.com/twofas)):
 PBKDF2-HMAC-SHA256 (10 000 iterations), AES-256-GCM, fields `base64(ciphertext+tag):base64(salt):base64(iv)`.
-
-## From B-2FA 1.x
-
-Version 2 is a rewrite of the Python edition in C++. The vault, the backups, the PIN file and the 2FAS
-export are the same formats: install 2.x over 1.x (or just run it) and your data opens as it is. Going back
-to 1.x works the same way.
 
 ## Contributing
 
