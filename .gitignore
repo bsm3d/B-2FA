@@ -1,0 +1,17 @@
+# build output
+build/
+out/
+*.obj
+*.pdb
+*.ilk
+*.exe
+
+# never publish user data (the test vectors are made-up accounts)
+*.b2fa
+*.2fas
+!tests/vectors/*.b2fa
+!tests/vectors/*.2fas
+
+# the 2FAS logo pack is not ours to redistribute
+/icons/
+services.json
