@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from b2fa import APP_NAME, __version__, app as appmod  # noqa: E402
+from b2fa import APP_NAME, AUTHOR, __version__, app as appmod  # noqa: E402
 
 
 def all_text(widget):
@@ -37,17 +37,15 @@ class AboutTests(unittest.TestCase):
         self.addCleanup(self.root.destroy)
         self.root.withdraw()
 
-    def test_about_shows_version_licence_warning_and_ai_note(self):
+    def test_about_is_short_and_shows_version_author_and_licence(self):
         dlg = appmod.AboutDialog(self.root)
         self.addCleanup(dlg.destroy)
         text = "\n".join(all_text(dlg))
         self.assertIn(APP_NAME, text)
         self.assertIn("Version " + __version__, text)
+        self.assertIn(AUTHOR, text)
         self.assertIn("GNU General Public License", text)
-        self.assertIn("not made, endorsed or supported by 2FAS", text)
-        self.assertIn("Not audited", text)
-        self.assertIn("AI coding assistant", text)
-        self.assertIn(self.home.name, text)
+        self.assertNotIn("Claude", text)
 
 
 if __name__ == "__main__":

@@ -116,7 +116,7 @@ def ask_password(parent, title, prompt, confirm=False, min_len=0, digits_only=Fa
 
 
 class AboutDialog(Dialog):
-    """Version, licence, what the app is not, and the AI transparency note."""
+    """Name, version, author and licence. The warnings and notes live in the README."""
 
     def __init__(self, parent):
         super().__init__(parent, "About %s" % APP_NAME)
@@ -129,18 +129,9 @@ class AboutDialog(Dialog):
                      anchor="w", wraplength=400).pack(anchor="w", pady=(0, 8))
 
         para("Your 2FAS codes on your PC, without your phone.")
-        para("By %s (%s)\n%s" % (AUTHOR, WEBSITE, REPOSITORY), fg=DIM)
-        para("Free software under the GNU General Public License v3 or later. It comes with "
-             "no warranty.", fg=DIM)
-        para("B-2FA is an independent project, not made, endorsed or supported by 2FAS.", fg=DIM)
-        para("Security", bold=True)
-        para("Not audited by a human security professional. Keep your phone as the reference "
-             "copy and use a strong master password.", fg=DIM)
-        para("Transparency note", bold=True)
-        para("Designed and directed by %s, written with the help of an AI coding assistant "
-             "(Claude Code, Anthropic). It is covered by automated tests and an automated "
-             "review, and may still contain errors." % AUTHOR, fg=DIM)
-        para("Your data: %s" % paths.data_dir(), fg=DIM)
+        para("By %s (%s)" % (AUTHOR, WEBSITE) + chr(10) + REPOSITORY, fg=DIM)
+        para("Free software under the GNU General Public License v3 or later, without warranty.",
+             fg=DIM)
         btns = tk.Frame(self, bg=BG)
         btns.pack(fill="x", pady=(4, 0))
         button(btns, "Close", self.destroy, red=True).pack(side="right")

@@ -16,10 +16,10 @@ phone app imports back.
 > rely on this software for anything where losing the account would be serious without understanding
 > these limits. It comes with no warranty (see [License](#license)).
 
-> **Transparency note.** B-2FA was designed and directed by Benoit Saint-Moulin and written with the
-> help of an AI coding assistant (Claude Code, by Anthropic). The code is covered by automated tests and
-> was reviewed by an independent automated AI audit, whose findings were fixed. It may nevertheless
-> contain errors. Read the code before you trust it with secrets that matter.
+> **Transparency note.** B-2FA was designed, directed and tested by hand by Benoit Saint-Moulin, and
+> written with the help of an AI coding assistant. The code is also covered by automated tests and was
+> reviewed by an independent automated AI audit, whose findings were fixed. It may nevertheless contain
+> errors. Read the code before you trust it with secrets that matter.
 
 > **Not affiliated with 2FAS.** B-2FA is an independent project. It is not made, endorsed or supported
 > by 2FAS. "2FAS" is the name of their product.
