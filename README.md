@@ -18,10 +18,10 @@ not at hand, and it can export a backup that the 2FAS phone app imports back.
 
 > **Transparency note.** B-2FA was designed, directed and tested by hand by Benoit Saint-Moulin, and
 > written with the help of an AI coding assistant. The code is also covered by automated tests and was
-> reviewed by two independent automated AI audits, whose findings were fixed. It was also installed and
-> tested in real conditions by its author, on his own PC, with his own 2FAS backup from his phone (import,
-> codes, export). It may nevertheless contain errors. Read the code before you trust it with secrets that
-> matter.
+> reviewed by two independent automated AI audits, whose findings were fixed. Benoit Saint-Moulin also
+> installed it and tested it himself in real conditions, on his own PC, with his own 2FAS backup from his
+> phone (import, codes, export). It may nevertheless contain errors. Read the code before you trust it with
+> secrets that matter.
 
 > **Not affiliated with 2FAS.** B-2FA is an independent project. It is not made, endorsed or supported
 > by 2FAS. "2FAS" is the name of their product.
