@@ -11,20 +11,19 @@ not at hand, and it can export a backup that the 2FAS phone app imports back.
 
 > **Security warning.** A code generator on the same computer as your passwords is, by design, a weaker
 > second factor than a separate phone: anyone who gets your unlocked PC and your master password gets
-> your codes. B-2FA has **not been audited by a human security professional** (see
+> your codes. I have **not had B-2FA audited by a human security professional** (see
 > [Security](#security)). Keep your phone as the reference copy, use a long master password, and do not
 > rely on this software for anything where losing the account would be serious without understanding
 > these limits. It comes with no warranty (see [License](#license)).
 
-> **Transparency note.** B-2FA was designed, directed and tested by hand by Benoit Saint-Moulin, and
-> written with the help of an AI coding assistant. The code is also covered by automated tests and was
-> reviewed by two independent automated AI audits, whose findings were fixed. Benoit Saint-Moulin also
-> installed it and tested it himself in real conditions, on his own PC, with his own 2FAS backup from his
-> phone (import, codes, export). It may nevertheless contain errors. Read the code before you trust it with
-> secrets that matter.
+> **Transparency note.** I designed, directed and tested B-2FA by hand, and I wrote it with the help of an
+> AI coding assistant. The code is also covered by automated tests and was reviewed by two independent
+> automated AI audits, whose findings were fixed. I also installed it and tested it myself in real
+> conditions, on my own PC, with my own 2FAS backup from my phone (import, codes, export). It may
+> nevertheless contain errors. Read the code before you trust it with secrets that matter.
 
-> **Not affiliated with 2FAS.** B-2FA is an independent project. It is not made, endorsed or supported
-> by 2FAS. "2FAS" is the name of their product.
+> **Not affiliated with 2FAS.** B-2FA is an independent project. I am not affiliated with 2FAS, and
+> B-2FA is not made, endorsed or supported by them. "2FAS" is the name of their product.
 
 ## Features
 
@@ -171,7 +170,7 @@ Known limits:
 - The program has had no review by a human security professional.
 
 To report a security problem, open an issue on GitHub without publishing a working exploit, or contact
-the author through [www.bsm3d.com](https://www.bsm3d.com).
+me through [www.bsm3d.com](https://www.bsm3d.com).
 
 ## Your data
 
