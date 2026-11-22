@@ -8,6 +8,7 @@
 #include <set>
 
 #include "crypto.h"
+#include "devicekey.h"
 #include "paths.h"
 #include "twofas.h"
 
@@ -17,6 +18,7 @@ namespace fs = std::filesystem;
 
 const char* const kDefaultIconCollection = "a5b3fb65-4ec5-43e6-8ec1-49e24ca9e7ad";
 uint64_t Vault::scryptN = kScryptN;
+uint64_t Vault::maxFileBytes = 192ull * 1024 * 1024;   // unlock reads up to 256 MiB: never write what cannot be read back
 
 namespace {
 
@@ -58,10 +60,11 @@ void checkKdfParams(uint64_t n, uint64_t r, uint64_t p) {
     if (!ok) throw VaultError("The vault file has unsupported key settings");
 }
 
-std::string aadFor(int version, uint64_t n, uint32_t r, uint32_t p, const std::string& salt) {
-    if (version == 1) return "b2fa-vault-1";  // first release: constant associated data
-    // json.dumps(head, sort_keys=True, separators=(",", ":")) of the earlier Python prototype
-    return std::string("{\"format\":\"") + kFormat + "\",\"kdf\":{\"n\":" + std::to_string(n) +
+// The header, as canonical JSON (keys sorted, no spaces), is the associated data of the encryption: nothing in
+// the header can be changed without the vault failing to open.
+std::string aadFor(int version, uint64_t n, uint32_t r, uint32_t p, const std::string& salt, bool bound) {
+    // "bound" sorts first; it is only written when true, so a vault that is not bound keeps the plain layout
+    return std::string(bound ? "{\"bound\":true,\"format\":\"" : "{\"format\":\"") + kFormat + "\",\"kdf\":{\"n\":" + std::to_string(n) +
            ",\"name\":\"scrypt\",\"p\":" + std::to_string(p) + ",\"r\":" + std::to_string(r) + ",\"salt\":\"" + salt +
            "\"},\"version\":" + std::to_string(version) + "}";
 }
@@ -70,15 +73,6 @@ std::string newId() { return randomHex(16); }
 
 bool matchesAutoName(const std::wstring& n) {
     return n.rfind(widen(kAutoPrefix), 0) == 0 && n.size() > 5 && n.compare(n.size() - 5, 5, L".b2fa") == 0;
-}
-
-bool matchesOldName(const std::wstring& n) {  // B-2FA-YYYYMMDD-HHMMSS.2fas, written by the first release
-    if (n.size() != 6 + 8 + 1 + 6 + 5 || n.rfind(L"B-2FA-", 0) != 0 || n.compare(n.size() - 5, 5, L".2fas") != 0) return false;
-    for (size_t i = 6; i < 6 + 8 + 1 + 6; ++i) {
-        if (i == 14) { if (n[i] != L'-') return false; }
-        else if (n[i] < L'0' || n[i] > L'9') return false;
-    }
-    return true;
 }
 
 }  // namespace
@@ -130,6 +124,7 @@ Json makeService(const std::string& nameIn, const std::string& secretIn, const s
     Json s = Json::object();
     s.set("name", Json(name));
     s.set("secret", Json(secret));
+    wipeString(secret);   // the Json holds its own copy now
     s.set("updatedAt", Json(nowMs()));
     s.set("type", Json());
     s.set("serviceTypeID", Json());
@@ -209,9 +204,18 @@ struct Vault::Snapshot {
     std::vector<Json> services, groups;
     bool committed = false;
     explicit Snapshot(Vault& vault) : v(vault), services(vault.services), groups(vault.groups) {}
-    void commit() { committed = true; }
+    void commit() {
+        committed = true;
+        wipeJsonList(services);
+        wipeJsonList(groups);
+    }
     ~Snapshot() {
-        if (!committed) { v.services = std::move(services); v.groups = std::move(groups); }
+        if (!committed) {
+            wipeJsonList(v.services);   // the half-changed state goes away
+            wipeJsonList(v.groups);
+            v.services = std::move(services);
+            v.groups = std::move(groups);
+        }
     }
 };
 
@@ -229,13 +233,16 @@ bool Vault::exists() const { return fileExists(path_); }
 
 void Vault::lock() {
     flushBackup(0);
+    backupDue_ = false;
     unlocked_ = false;
     secureZero(key_.data(), key_.size());
     key_.clear();
     password_.wipe();
     sig_ = FileSig{};
-    services.clear();
-    groups.clear();
+    secureZero(deviceSecret_.data(), deviceSecret_.size());
+    deviceSecret_.clear();
+    wipeJsonList(services);   // the accounts' secrets are overwritten, not just freed
+    wipeJsonList(groups);
 }
 
 const Secret& Vault::masterPassword() const {
@@ -256,10 +263,53 @@ Vault::Header Vault::derive(const Secret& password, Bytes& key) const {
     return h;
 }
 
-void Vault::create(const Secret& password) {
+// Copies of an EARLIER vault (the .bak and the automatic backups) must not be overwritten or rotated away by the
+// new one: they may be the only way back to the old accounts. They go to a folder of their own, untouched.
+void Vault::keepCopiesOfEarlierVault() {
+    keptCopies_.clear();
+    std::vector<fs::path> old;
+    fs::path bak = path_;
+    bak += L".bak";
+    if (fileExists(bak)) old.push_back(bak);
+    if (devicekey::exists(devicekey::pathFor(path_))) old.push_back(devicekey::pathFor(path_));   // the key those copies need
+    std::error_code ec;
+    for (fs::directory_iterator it(backupsDir_, ec), end; !ec && it != end; it.increment(ec)) {
+        std::wstring name = it->path().filename().wstring();
+        if (it->is_regular_file(ec) && matchesAutoName(name)) old.push_back(it->path());
+    }
+    if (old.empty()) return;
+    char stamp[32];
+    std::time_t t = std::time(nullptr);
+    std::tm local{};
+    localtime_s(&local, &t);
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local);
+    fs::path dir = backupsDir_ / (std::string("earlier-vault-") + stamp);
+    fs::create_directories(dir, ec);
+    for (const fs::path& f : old) {
+        std::error_code mv;
+        fs::rename(f, dir / f.filename(), mv);
+    }
+    keptCopies_ = dir;
+}
+
+void Vault::create(const Secret& password, bool bind) {
     if (exists()) throw VaultError("A vault already exists");
     checkMasterPassword(password);
+    keepCopiesOfEarlierVault();
     header_ = derive(password, key_);
+    header_.bound = bind;
+    if (bind) {
+        try {
+            deviceSecret_ = devicekey::create(devicekey::pathFor(path_));
+        } catch (const devicekey::Error& e) {
+            secureZero(key_.data(), key_.size());
+            throw VaultError(e.what());
+        }
+        deviceId_ = devicekey::idOf(deviceSecret_);
+        Bytes mixed = devicekey::combine(key_, deviceSecret_);
+        secureZero(key_.data(), key_.size());
+        key_ = std::move(mixed);
+    }
     password_ = password.clone();
     services.clear();
     groups.clear();
@@ -268,15 +318,17 @@ void Vault::create(const Secret& password) {
         save(false);
     } catch (...) {
         lock();
+        if (bind) removeFile(devicekey::pathFor(path_));   // no vault was made: no key either
         throw;
     }
 }
 
 void Vault::unlock(const Secret& password) {
+    FileSig sigBeforeRead = fileSig(path_);   // taken first: a change between the read and the signature must be seen
     Bytes key;
     Header header;
-    int version = 0;
     std::vector<Json> loadedServices, loadedGroups;
+    Bytes deviceSecretLoaded;
     try {
         std::string fileText;
         readFile(path_, fileText, 256ull * 1024 * 1024);
@@ -286,8 +338,7 @@ void Vault::unlock(const Secret& password) {
             throw VaultError("This file is not a B-2FA vault");
         int64_t v = 0;
         const Json* ver = doc.get("version");
-        if (!ver || !ver->toInt64(v) || (v != 1 && v != kVersion)) throw VaultError("This vault was made by a newer B-2FA");
-        version = static_cast<int>(v);
+        if (!ver || !ver->toInt64(v) || v != kVersion) throw VaultError("This vault file has an unsupported format version");
         const Json* kdf = doc.get("kdf");
         if (!kdf || !kdf->isObject()) throw VaultError("The vault file is damaged (KeyError)");
         uint64_t n = 0, r = 0, p = 0;
@@ -296,6 +347,10 @@ void Vault::unlock(const Secret& password) {
             throw VaultError("The vault file has unsupported key settings");
         if (!jname->isString() || jname->asString() != "scrypt") throw VaultError("The vault file has unsupported key settings");
         checkKdfParams(n, r, p);
+        if (const Json* jb = doc.get("bound")) {
+            if (!jb->isBool()) throw VaultError("The vault file is damaged (ValueError)");
+            header.bound = jb->asBool();
+        }
         Bytes salt, nonce, data;
         const Json *jnonce = doc.get("nonce"), *jdata = doc.get("data");
         if (!jnonce || !jdata || !jnonce->isString() || !jdata->isString() || !base64Decode(jsalt->asString(), salt) ||
@@ -305,8 +360,22 @@ void Vault::unlock(const Secret& password) {
         header.n = n;
         header.r = static_cast<uint32_t>(r);
         header.p = static_cast<uint32_t>(p);
+        Bytes secret;
+        if (header.bound) {
+            try {
+                secret = devicekey::load(devicekey::pathFor(path_));   // before the slow derivation: a missing key is said at once
+            } catch (const devicekey::Error& e) {
+                throw VaultError(e.what());
+            }
+        }
         key = scrypt(reinterpret_cast<const uint8_t*>(password.data()), password.size(), salt, n, header.r, header.p, 32);
-        std::string aad = aadFor(version, n, header.r, header.p, header.salt);
+        if (header.bound) {
+            Bytes mixed = devicekey::combine(key, secret);
+            secureZero(key.data(), key.size());
+            key = std::move(mixed);
+            deviceSecretLoaded = std::move(secret);
+        }
+        std::string aad = aadFor(kVersion, n, header.r, header.p, header.salt, header.bound);
         Bytes plain;
         if (!aesGcmDecrypt(key, nonce, data.data(), data.size(), reinterpret_cast<const uint8_t*>(aad.data()), aad.size(), plain)) {
             secureZero(key.data(), key.size());
@@ -325,6 +394,7 @@ void Vault::unlock(const Secret& password) {
         if (!payload.isObject() || (js && !js->isArray()) || (jg && !jg->isArray())) throw VaultError("The vault file is damaged (ValueError)");
         if (js) for (const Json& s : js->items()) if (s.isObject()) loadedServices.push_back(s);
         if (jg) for (const Json& g : jg->items()) if (g.isObject()) loadedGroups.push_back(g);
+        payload.wipe();   // the copies above are the only ones left
     } catch (const VaultError&) {
         secureZero(key.data(), key.size());
         throw;
@@ -335,28 +405,14 @@ void Vault::unlock(const Secret& password) {
     }
     header_ = header;
     key_ = std::move(key);
+    deviceSecret_ = std::move(deviceSecretLoaded);
+    deviceId_ = header.bound ? devicekey::idOf(deviceSecret_) : std::string();
     password_ = password.clone();
     unlocked_ = true;
-    sig_ = fileSig(path_);
+    sig_ = sigBeforeRead;
     services = std::move(loadedServices);
     groups = std::move(loadedGroups);
     for (Json& s : services) s.set("_id", Json(newId()));
-    if (version != kVersion || header_.n < scryptN) {
-        // move an older vault to the current format and key settings, then drop old copies
-        Bytes oldKey = key_;
-        Header oldHeader = header_;
-        header_ = derive(password, key_);
-        try {
-            save(false);
-        } catch (...) {
-            header_ = oldHeader;
-            key_ = oldKey;
-            throw;
-        }
-        secureZero(oldKey.data(), oldKey.size());
-        purgeCopies();
-        markBackupDue();
-    }
 }
 
 void Vault::save(bool backup) {
@@ -368,8 +424,9 @@ void Vault::save(bool backup) {
     payload.set("services", std::move(s));
     payload.set("groups", std::move(g));
     std::string plain = payload.dump();
+    payload.wipe();
     Bytes nonce = randomBytes(12);
-    std::string aad = aadFor(kVersion, header_.n, header_.r, header_.p, header_.salt);
+    std::string aad = aadFor(kVersion, header_.n, header_.r, header_.p, header_.salt, header_.bound);
     Bytes cipher = aesGcmEncrypt(key_, nonce, reinterpret_cast<const uint8_t*>(plain.data()), plain.size(),
                                  reinterpret_cast<const uint8_t*>(aad.data()), aad.size());
     secureZero(plain.data(), plain.size());
@@ -382,19 +439,24 @@ void Vault::save(bool backup) {
     Json doc = Json::object();
     doc.set("format", Json(kFormat));
     doc.set("version", Json(kVersion));
+    if (header_.bound) doc.set("bound", Json(true));
     doc.set("kdf", std::move(kdf));
     doc.set("nonce", Json(base64Encode(nonce)));
     doc.set("data", Json(base64Encode(cipher)));
+    std::string text = doc.dump();
+    if (text.size() > maxFileBytes)   // a vault that is written must be a vault that can be read
+        throw VaultError("The vault would be too big (" + std::to_string(text.size() / (1024 * 1024)) +
+                         " MB). Nothing was saved. Delete accounts with very large extra data, or import fewer.");
     fs::path tmp = path_;
     tmp += L".tmp";
     try {
-        writeFileSynced(tmp, doc.dump());
+        writeFileSynced(tmp, text);
         if (exists()) {
             if (sig_.valid && fileSig(path_) != sig_)
                 throw VaultError("The vault was changed by another program. Close and reopen B-2FA before editing it.");
             fs::path bak = path_;
             bak += L".bak";
-            copyFileOver(path_, bak);
+            if (!copyFileOver(path_, bak)) lastBackupError_ = "Could not keep the previous version of the vault (vault.b2fa.bak).";
         }
         replaceFile(tmp, path_);
     } catch (...) {
@@ -403,7 +465,41 @@ void Vault::save(bool backup) {
     }
     removeFile(tmp);
     sig_ = fileSig(path_);
+    // read it back with the key we hold BEFORE anything that deletes older copies can run
+    if (!verifyWritten()) {
+        fs::path bak = path_;
+        bak += L".bak";
+        if (fileExists(bak) && copyFileOver(bak, path_)) sig_ = fileSig(path_);   // put the previous, readable version back
+        throw VaultError("The new vault file could not be read back, so the previous version was kept. Nothing was lost.");
+    }
     if (backup && !backupDue_) markBackupDue();
+}
+
+bool Vault::verifyWritten() {
+    try {
+        std::string text;
+        readFile(path_, text, maxFileBytes + 1024 * 1024);
+        Json doc = Json::parse(text);
+        const Json* kdf = doc.get("kdf");
+        const Json *jnonce = doc.get("nonce"), *jdata = doc.get("data");
+        if (!kdf || !jnonce || !jdata || !jnonce->isString() || !jdata->isString()) return false;
+        Bytes nonce, data, plain;
+        if (!base64Decode(jnonce->asString(), nonce) || !base64Decode(jdata->asString(), data)) return false;
+        std::string aad = aadFor(kVersion, header_.n, header_.r, header_.p, header_.salt, header_.bound);
+        if (!aesGcmDecrypt(key_, nonce, data.data(), data.size(), reinterpret_cast<const uint8_t*>(aad.data()), aad.size(), plain)) return false;
+        bool ok = true;
+        try {
+            Json payload = Json::parse(std::string_view(reinterpret_cast<const char*>(plain.data()), plain.size()));
+            ok = payload.isObject();
+            payload.wipe();
+        } catch (const std::exception&) {
+            ok = false;
+        }
+        secureZero(plain.data(), plain.size());
+        return ok;
+    } catch (const std::exception&) {
+        return false;
+    }
 }
 
 void Vault::changePassword(const Secret& oldPassword, const Secret& newPassword) {
@@ -413,6 +509,12 @@ void Vault::changePassword(const Secret& oldPassword, const Secret& newPassword)
     Bytes oldKey = key_;
     Secret oldPw = password_.clone();
     header_ = derive(newPassword, key_);
+    header_.bound = oldHeader.bound;
+    if (header_.bound) {
+        Bytes mixed = devicekey::combine(key_, deviceSecret_);
+        secureZero(key_.data(), key_.size());
+        key_ = std::move(mixed);
+    }
     password_ = newPassword.clone();
     try {
         save(false);
@@ -452,24 +554,29 @@ void Vault::purgeCopies() {
     std::error_code ec;
     for (fs::directory_iterator it(backupsDir_, ec), end; !ec && it != end; it.increment(ec)) {
         std::wstring name = it->path().filename().wstring();
-        if (matchesAutoName(name) || matchesOldName(name)) removeFile(it->path());
+        bool tmpCopy = name.rfind(widen(kAutoPrefix), 0) == 0 && name.size() > 4 && name.compare(name.size() - 4, 4, L".tmp") == 0;
+        if (matchesAutoName(name) || tmpCopy) removeFile(it->path());
     }
 }
 
 void Vault::flushBackup(double delaySeconds) {
     if (!backupDue_ || !unlocked_) return;
     if (static_cast<double>(monotonicMs() - backupDueAt_) / 1000.0 < delaySeconds) return;
-    backupDue_ = false;
     try {
         autoBackup();
         lastBackupError_.clear();
+        backupDue_ = false;
     } catch (const std::exception& e) {
-        lastBackupError_ = e.what();
+        lastBackupError_ = std::string("Automatic backup failed: ") + e.what();
+        backupDueAt_ = monotonicMs();   // still due: tried again after the delay
     }
 }
 
 std::optional<fs::path> Vault::autoBackup() {
     if (services.empty() || !exists()) return std::nullopt;
+    // never copy over good backups a file somebody else changed or damaged
+    if (sig_.valid && fileSig(path_) != sig_)
+        throw VaultError("the vault file was changed by another program, so no backup was made");
     std::error_code ec;
     fs::create_directories(backupsDir_, ec);
     char stamp[32];
@@ -505,7 +612,7 @@ std::vector<Json> Vault::exportableServices() const {
     int64_t i = 0;
     for (const Json* s : order) {
         Json clean = Json::object();
-        for (const auto& m : s->members()) if (m.first.empty() || m.first[0] != '_') clean.set(m.first, m.second);
+        for (const auto& m : s->members()) if (m.first.empty() || m.first[0] != '_') clean.members().emplace_back(m);   // linear: set() scanned the keys each time
         Json pos = Json::object();
         pos.set("position", Json(i++));
         clean.set("order", std::move(pos));
@@ -515,11 +622,19 @@ std::vector<Json> Vault::exportableServices() const {
 }
 
 void Vault::exportBackup(const fs::path& path, const Secret& password) {
+    if (!unlocked_) throw VaultError("The vault is locked. Nothing was exported.");   // a locked vault would export an empty file
     if (password.codepoints() < kMinExportChars)
         throw VaultError("The backup password needs at least " + std::to_string(kMinExportChars) + " characters");
     if (checkPassword(password))
         throw VaultError("Use a password different from the master password: the .2fas format protects it far less than the vault does");
-    twofas::writeBackup(path, exportableServices(), groups, password);
+    std::vector<Json> list = exportableServices();
+    try {
+        twofas::writeBackup(path, list, groups, password);
+    } catch (...) {
+        wipeJsonList(list);
+        throw;
+    }
+    wipeJsonList(list);
 }
 
 // ---- accounts ------------------------------------------------------------
@@ -646,8 +761,13 @@ std::pair<int, int> Vault::merge(const Json& content) {
             ++skipped;
             continue;
         }
+        if (s.dump().size() > kMaxServiceBytes) {   // an entry with megabytes of extra fields is not an account
+            ++skipped;
+            continue;
+        }
         std::string secret = s.get("secret")->asString();
         if (known.count(secret)) {
+            wipeString(secret);
             ++skipped;
             continue;
         }
@@ -657,8 +777,12 @@ std::pair<int, int> Vault::merge(const Json& content) {
         s.set("order", std::move(order));
         services.push_back(std::move(s));
         known.insert(secret);
+        wipeString(secret);
         ++added;
     }
+    // the set of secrets goes away: overwrite its texts first (the nodes are never compared again)
+    for (const std::string& k : known) secureZero(const_cast<char*>(k.data()), k.capacity() + 1);
+    known.clear();
     if (added) save();
     snap.commit();
     return {added, skipped};

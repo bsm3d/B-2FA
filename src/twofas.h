@@ -33,7 +33,7 @@ constexpr int kSchemaVersion = 4;
 constexpr uint32_t kPbkdf2Iterations = 10000;
 constexpr size_t kSaltBytes = 256;
 constexpr size_t kIvBytes = 12;
-constexpr uint64_t kMaxFileBytes = 100ull * 1024 * 1024;
+constexpr uint64_t kMaxFileBytes = 16ull * 1024 * 1024;   // a real backup of thousands of accounts is far smaller
 constexpr size_t kMaxServices = 10000;
 
 // Load a backup file (still encrypted if it was exported with a password). Throws BackupError.

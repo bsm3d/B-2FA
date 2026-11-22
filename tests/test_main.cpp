@@ -1,6 +1,9 @@
 // B-2FA core tests: crypto vectors from the RFCs, the vault, the 2FAS format, and files made by
 // the earlier Python prototype. Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
+#include <windows.h>
+
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -9,6 +12,7 @@
 #include <vector>
 
 #include "crypto.h"
+#include "devicekey.h"
 #include "fileio.h"
 #include "json.h"
 #include "keypad_layout.h"
@@ -16,6 +20,7 @@
 #include "settings.h"
 #include "totp.h"
 #include "twofas.h"
+#include "unlockguard.h"
 #include "util.h"
 #include "vault.h"
 
@@ -373,31 +378,525 @@ static void test_vault() {
     Vault::scryptN = kScryptN;
 }
 
+// ---- fixes from the independent review --------------------------------------------------------------------------
+static void test_review_fixes() {
+    PinStore::kdfN = 1ull << 15;
+    // JSON: a hostile object with very many keys parses in linear time, a repeated key keeps its place
+    {
+        std::string big = "{";
+        for (int i = 0; i < 200000; ++i) big += (i ? ",\"k" : "\"k") + std::to_string(i) + "\":" + std::to_string(i);
+        big += ",\"k5\":\"last\"}";
+        auto t0 = std::chrono::steady_clock::now();
+        Json j = Json::parse(big);
+        double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        CHECK(seconds < 3.0);   // it was 1.5 s for 50 000 keys and grew with the square
+        CHECK_EQ(j.members().size(), size_t(200000));
+        CHECK_EQ(j.members()[5].first, std::string("k5"));
+        CHECK_EQ(j.members()[5].second.asString(), std::string("last"));
+    }
+    {
+        Json j = Json::parse(R"({"secret":"JBSWY3DPEHPK3PXP","list":["a","b",{"x":"y"}]})");
+        j.wipe();
+        CHECK(j.isNull());
+        CHECK(j.members().empty() && j.items().empty());
+    }
+
+    Vault::scryptN = 1ull << 14;
+    fs::path dir = tempDir("review");
+    fs::path path = dir / "vault.b2fa";
+
+    // exporting from a locked vault must not write an empty "successful" file
+    {
+        Vault v(path);
+        v.create(S("a long master pass"));
+        v.add(makeService("GitHub", S1, "GitHub", "me"));
+        v.lock();
+        CHECK(throws<VaultError>([&] { v.exportBackup(dir / "locked.2fas", S("an export passphrase!")); }));
+        CHECK(!fileExists(dir / "locked.2fas"));
+    }
+
+    // a backup is refused when the vault file was changed behind our back (it could copy over good backups)
+    {
+        Vault v(path);
+        v.unlock(S("a long master pass"));
+        std::string text;
+        readFile(path, text);
+        writeFileSynced(path, text + " ");
+        CHECK(throws<VaultError>([&] { v.autoBackup(); }));
+        writeFileSynced(path, text);   // restore the bytes (the signature still differs: the file time moved)
+        v.lock();
+    }
+
+    // creating a vault next to the copies of an earlier one keeps them, in a folder of their own
+    {
+        Vault v(path);
+        v.unlock(S("a long master pass"));
+        v.add(makeService("Second", "MFRGGZDFMZTWQ2LK", "Second", "me"));   // leaves a .bak
+        v.flushBackup(0);
+        CHECK(v.autoBackup().has_value());
+        v.lock();
+        size_t before = 0;
+        for (auto& e : fs::directory_iterator(dir / "backups")) { (void)e; ++before; }
+        CHECK(before >= 1);
+        fs::path bak = path;
+        bak += L".bak";
+        CHECK(fileExists(bak));
+        fs::remove(path);   // the vault file got lost
+        Vault fresh(path);
+        fresh.create(S("a different master pass"));
+        CHECK(!fresh.keptCopiesDir().empty());
+        CHECK(fs::exists(fresh.keptCopiesDir() / path.filename().concat(L".bak")));
+        for (int i = 0; i < 14; ++i) fresh.add(makeService("N" + std::to_string(i), S1, "N", "x"));   // rotation must not touch them
+        CHECK(fs::exists(fresh.keptCopiesDir() / path.filename().concat(L".bak")));
+        size_t kept = 0;
+        for (auto& e : fs::directory_iterator(fresh.keptCopiesDir())) { (void)e; ++kept; }
+        CHECK(kept >= 2);   // the .bak and at least one automatic backup
+        // and they still open with the OLD password
+        Vault old(fresh.keptCopiesDir() / path.filename().concat(L".bak"));
+        old.unlock(S("a long master pass"));
+        CHECK(old.services.size() >= 1);
+        old.lock();
+        fresh.lock();
+    }
+
+    // a vault that could not be read back is never written: the size limit and the per-account limit
+    {
+        fs::path p2 = dir / "big.b2fa";
+        Vault v(p2);
+        v.create(S("a long master pass"));
+        Vault::maxFileBytes = 60000;
+        Json fat = makeService("Fat", S1, "Fat", "x");
+        fat.set("extra", Json(std::string(80000, 'x')));
+        CHECK(throws<VaultError>([&] { v.add(fat); }));
+        CHECK(v.services.empty());   // rolled back
+        Vault::maxFileBytes = 192ull * 1024 * 1024;
+        // an imported entry with a huge unknown field is skipped, not kept
+        Json incoming = Json::object(), list = Json::array();
+        Json heavy = makeService("Heavy", S1, "Heavy", "x");
+        heavy.set("extra", Json(std::string(70000, 'y')));
+        list.push(heavy);
+        list.push(makeService("Light", S256, "Light", "x"));
+        incoming.set("services", std::move(list));
+        auto r = v.merge(incoming);
+        CHECK_EQ(r.first, 1);
+        CHECK_EQ(r.second, 1);
+        v.lock();
+    }
+    fs::remove_all(dir);
+    Vault::scryptN = kScryptN;
+
+    // PIN: a text that cannot be a PIN costs no attempt, a busy file is not a damaged file
+    {
+        fs::path pdir = tempDir("pinreview");
+        PinStore pins(pdir / "pin.b2fa");
+        pins.enable(S("427103"), S("master password 123"));
+        for (int i = 0; i < 12; ++i) {
+            CHECK(throws<PinError>([&] { pins.unlock(S("")); }));
+            CHECK(throws<PinError>([&] { pins.unlock(S("12")); }));
+        }
+        CHECK(pins.enabled());
+        CHECK(pins.unlock(S("427103")).equals(S("master password 123")));
+        // the file held open without sharing, like a scanner would: unlock fails but keeps the file
+        HANDLE hold = CreateFileW((pdir / "pin.b2fa").c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        CHECK(hold != INVALID_HANDLE_VALUE);
+        CHECK(throws<PinError>([&] { pins.unlock(S("427103")); }));
+        if (hold != INVALID_HANDLE_VALUE) CloseHandle(hold);
+        CHECK(pins.enabled());
+        CHECK(pins.unlock(S("427103")).equals(S("master password 123")));
+        fs::remove_all(pdir);
+    }
+}
+
+// ---- fixes from the independent security audit -------------------------------------------------------------------------
+static std::string readAll(const fs::path& p) {
+    std::string t;
+    readFile(p, t);
+    return t;
+}
+
+static void test_audit_fixes() {
+    PinStore::kdfN = 1ull << 15;
+    fs::path dir = tempDir("audit");
+
+    // a PIN is 6 to 10 digits, to set and to unlock
+    {
+        PinStore pins(dir / "pin.b2fa");
+        CHECK(throws<PinError>([&] { pins.enable(S("4271"), S("master password 123")); }));          // too short
+        CHECK(throws<PinError>([&] { pins.enable(S("12345678901"), S("master password 123")); }));   // too long
+        pins.enable(S("1234567890"), S("master password 123"));
+        CHECK(pins.unlock(S("1234567890")).equals(S("master password 123")));
+        for (int i = 0; i < 12; ++i) CHECK(throws<PinError>([&] { pins.unlock(S("4271")); }));       // too short to be a PIN: no attempt used
+        CHECK(pins.enabled());
+        Json doc = Json::parse(readAll(dir / "pin.b2fa"));
+        uint64_t v = 0, n = 0, left = 0;
+        CHECK(doc.get("version")->toUInt64(v) && v == 1);
+        CHECK(doc.get("n")->toUInt64(n) && n == (1ull << 15));   // the cost is stored in the file
+        CHECK(doc.get("attempts_left")->toUInt64(left) && left == 5);
+        // files of earlier development builds (no cost in the file, or another version) are damaged files: removed
+        Json old = doc;
+        old.set("version", Json(2));
+        writeFileSynced(dir / "pin.b2fa", old.dump());
+        CHECK(throws<PinDisabled>([&] { pins.unlock(S("1234567890")); }));
+        CHECK(!pins.enabled());
+    }
+    // a file cannot choose the cost of the key derivation (it is untrusted input): absurd settings are a damaged file
+    {
+        PinStore pins(dir / "pin.b2fa");
+        pins.enable(S("427103"), S("master password 123"));
+        Json doc = Json::parse(readAll(dir / "pin.b2fa"));
+        for (uint64_t badN : {uint64_t(1) << 30, uint64_t(3), uint64_t(1) << 12}) {
+            Json bad = doc;
+            bad.set("n", Json(badN));
+            writeFileSynced(dir / "pin.b2fa", bad.dump());
+            CHECK(throws<PinDisabled>([&] { pins.unlock(S("427103")); }));
+            CHECK(!pins.enabled());
+            pins.enable(S("427103"), S("master password 123"));
+        }
+        Json odd = doc;
+        odd.set("r", Json(16));
+        writeFileSynced(dir / "pin.b2fa", odd.dump());
+        CHECK(throws<PinDisabled>([&] { pins.unlock(S("427103")); }));
+        pins.disable();
+    }
+
+    // JSON: a document with an absurd number of values is refused, not parsed into gigabytes
+    {
+        std::string many = "[";
+        for (int i = 0; i < 1600000; ++i) many += i ? ",0" : "0";
+        many += "]";
+        CHECK(throws<JsonError>([&] { Json::parse(many); }));
+        std::string fine = "[";
+        for (int i = 0; i < 1000; ++i) fine += i ? ",0" : "0";
+        fine += "]";
+        CHECK_EQ(Json::parse(fine).items().size(), size_t(1000));
+    }
+    // a backup file over the size cap is refused before it is read
+    {
+        fs::path big = dir / "big.2fas";
+        std::string junk(17u * 1024 * 1024, ' ');
+        writeFileSynced(big, junk);
+        CHECK(throws<twofas::BackupError>([&] { twofas::readBackup(big); }));
+    }
+    // json strings and keys keep their content through copies and moves (the destructor wipes buffers, not values)
+    {
+        Json a = Json::parse(R"({"secret":"JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP","list":["abc","a much longer string than the small buffer"]})");
+        Json b = a;
+        Json c = std::move(a);
+        a = Json();
+        CHECK_EQ(b.get("secret")->asString(), std::string("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"));
+        CHECK_EQ(c.dump(), b.dump());
+        c = b;
+        b.wipe();
+        CHECK_EQ(c.get("list")->items()[1].asString(), std::string("a much longer string than the small buffer"));
+    }
+    // the export of an account with thousands of fields is linear, and the internal keys do not leave
+    {
+        Vault::scryptN = 1ull << 14;
+        Vault v(dir / "many.b2fa");
+        v.create(S("a long master pass"));
+        Json fat = makeService("Fat", S1, "Fat", "x");
+        for (int i = 0; i < 6000; ++i) fat.set("k" + std::to_string(i), Json(i));
+        v.add(fat);
+        auto t0 = std::chrono::steady_clock::now();
+        auto list = v.exportableServices();
+        double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        CHECK(seconds < 1.0);
+        CHECK_EQ(list.size(), size_t(1));
+        CHECK(list[0].get("_id") == nullptr);
+        CHECK(list[0].get("k5999") != nullptr);
+        v.lock();
+        Vault::scryptN = kScryptN;
+    }
+    // a vault file that changed between our read and our signature is noticed (the signature is taken first)
+    {
+        Vault::scryptN = 1ull << 14;
+        Vault v(dir / "sig.b2fa");
+        v.create(S("a long master pass"));
+        v.add(makeService("A", S1, "A", "x"));
+        v.lock();
+        Vault w(dir / "sig.b2fa");
+        w.unlock(S("a long master pass"));
+        std::string text = readAll(dir / "sig.b2fa");
+        writeFileSynced(dir / "sig.b2fa", text + " ");
+        CHECK(throws<VaultError>([&] { w.add(makeService("B", S256, "B", "x")); }));
+        w.lock();
+        Vault::scryptN = kScryptN;
+    }
+    // leftovers of an interrupted backup copy go with the other old copies
+    {
+        Vault::scryptN = 1ull << 14;
+        fs::path p = dir / "purge.b2fa";
+        Vault v(p);
+        v.create(S("a long master pass"));
+        v.add(makeService("A", S1, "A", "x"));
+        fs::create_directories(dir / "backups");
+        writeFileSynced(dir / "backups" / "B-2FA-auto-20260101-000000.tmp", "leftover");
+        v.add(makeService("B", S256, "B", "x"));
+        v.remove(serviceId(v.services[0]));   // a delete purges every copy
+        CHECK(!fileExists(dir / "backups" / "B-2FA-auto-20260101-000000.tmp"));
+        v.lock();
+        Vault::scryptN = kScryptN;
+    }
+    fs::remove_all(dir);
+}
+
+// ---- binding the vault to this PC, longer passwords, a stronger key derivation ----------------------------------------------
+static void test_binding() {
+    Vault::scryptN = 1ull << 14;
+    fs::path dir = tempDir("bind");
+    fs::path path = dir / "vault.b2fa";
+    const char* pw = "a long master pass";
+    std::string id;
+
+    // limits: 16 characters to create, 16 to export, the full key derivation by default
+    {
+        CHECK_EQ(kMinMasterChars, size_t(16));
+        CHECK_EQ(kMinExportChars, size_t(16));
+        CHECK_EQ(kScryptN, uint64_t(1) << 18);
+        Vault v(dir / "short.b2fa");
+        CHECK(throws<VaultError>([&] { v.create(S("fifteen chars!!")); }));      // 15 characters
+        CHECK(!fileExists(devicekey::pathFor(dir / "short.b2fa")));              // and no key was left behind
+        v.create(S("sixteen chars!!!!"));                                          // 16 characters
+        v.add(makeService("A", S1, "A", "x"));
+        CHECK(throws<VaultError>([&] { v.exportBackup(dir / "e.2fas", S("fifteen chars!!")); }));
+        v.exportBackup(dir / "e.2fas", S("sixteen chars!!!!x"));
+        v.lock();
+    }
+    // a new vault is bound by default: a device key next to it, a flag in the (authenticated) header
+    {
+        Vault v(path);
+        v.create(S(pw));
+        CHECK(v.bound());
+        CHECK(fileExists(devicekey::pathFor(path)));
+        CHECK(!v.deviceId().empty());
+        id = v.deviceId();
+        v.add(makeService("A", S1, "A", "x"));
+        v.lock();
+        Json doc = Json::parse(readAll(path));
+        CHECK(doc.get("bound") && doc.get("bound")->asBool());
+        Vault w(path);
+        w.unlock(S(pw));
+        CHECK(w.bound());
+        CHECK_EQ(w.deviceId(), id);
+        CHECK_EQ(w.services.size(), size_t(1));
+        // changing the master password keeps the binding and the device key
+        w.changePassword(S(pw), S("another long passphrase"));
+        w.lock();
+        Vault x(path);
+        CHECK(throws<WrongMasterPassword>([&] { x.unlock(S(pw)); }));
+        x.unlock(S("another long passphrase"));
+        CHECK(x.bound() && x.deviceId() == id);
+        x.lock();
+    }
+    // the vault file alone does not open: copied elsewhere, with the right password, it says why
+    {
+        fs::path other = dir / "elsewhere";
+        fs::create_directories(other);
+        fs::copy_file(path, other / "vault.b2fa");
+        Vault v(other / "vault.b2fa");
+        bool clear = false, wrongPassword = false;
+        try {
+            v.unlock(S("another long passphrase"));
+        } catch (const WrongMasterPassword&) {
+            wrongPassword = true;
+        } catch (const VaultError& e) {
+            clear = std::string(e.what()).find("bound to the PC") != std::string::npos;
+        }
+        CHECK(clear && !wrongPassword);
+        CHECK(!v.unlocked());
+        // a damaged device key says the same, and the vault stays untouched
+        writeFileSynced(other / "device.b2fa", "{not json");
+        clear = false;
+        try { v.unlock(S("another long passphrase")); } catch (const VaultError& e) { clear = std::string(e.what()).find("bound to the PC") != std::string::npos; }
+        CHECK(clear);
+        // another device key (even a good one) does not decrypt it
+        devicekey::create(other / "device.b2fa");
+        CHECK(throws<WrongMasterPassword>([&] { v.unlock(S("another long passphrase")); }));
+    }
+    // the flag cannot be dropped to dodge the device key: the header is authenticated, the key would differ anyway
+    {
+        Json doc = Json::parse(readAll(path));
+        doc.erase("bound");
+        fs::path forged = dir / "forged" / "vault.b2fa";
+        fs::create_directories(forged.parent_path());
+        writeFileSynced(forged, doc.dump());
+        fs::copy_file(devicekey::pathFor(path), devicekey::pathFor(forged), fs::copy_options::overwrite_existing);
+        Vault v(forged);
+        CHECK(throws<WrongMasterPassword>([&] { v.unlock(S("another long passphrase")); }));
+        doc.set("bound", Json("yes"));
+        writeFileSynced(forged, doc.dump());
+        CHECK(throws<VaultError>([&] { v.unlock(S("another long passphrase")); }));
+    }
+    // a vault that is not bound opens from any folder
+    {
+        fs::path a = dir / "free" / "vault.b2fa";
+        fs::create_directories(a.parent_path());
+        Vault v(a);
+        v.create(S(pw), false);
+        CHECK(!v.bound());
+        CHECK(v.deviceId().empty());
+        CHECK(!fileExists(devicekey::pathFor(a)));
+        v.add(makeService("Free", S256, "Free", "x"));
+        v.lock();
+        fs::path b = dir / "moved";
+        fs::create_directories(b);
+        fs::copy_file(a, b / "vault.b2fa");
+        Vault w(b / "vault.b2fa");
+        w.unlock(S(pw));
+        CHECK(!w.bound());
+        CHECK_EQ(w.services.size(), size_t(1));
+        w.lock();
+    }
+    // a new vault where an old one had its device key: that key goes with the old copies, the new one is new
+    {
+        Vault old(path);
+        old.unlock(S("another long passphrase"));
+        old.add(makeService("B", S256, "B", "x"));
+        old.lock();
+        fs::remove(path);
+        Vault fresh(path);
+        fresh.create(S("yet another long pass"));
+        CHECK(!fresh.keptCopiesDir().empty());
+        CHECK(fileExists(fresh.keptCopiesDir() / "device.b2fa"));
+        CHECK(fresh.bound() && fresh.deviceId() != id);
+        fresh.lock();
+        // the earlier vault copy still opens with ITS key, which was kept beside it
+        fs::path bak = fresh.keptCopiesDir() / "vault.b2fa.bak";
+        CHECK(fileExists(bak));
+        Vault again(bak);
+        again.unlock(S("another long passphrase"));
+        CHECK(again.bound() && again.deviceId() == id);
+        again.lock();
+    }
+    // settings: which vault has had its recovery export
+    {
+        Settings s(dir / "settings.json");
+        CHECK(s.recoveryExportedFor().empty());
+        s.setRecoveryExportedFor("0123456789abcdef");
+        CHECK_EQ(Settings(dir / "settings.json").recoveryExportedFor(), std::string("0123456789abcdef"));
+        Json doc = Json::parse(readAll(dir / "settings.json"));
+        doc.set("recovery_exported_for", Json(std::string(200, 'x')));   // absurd: ignored
+        writeFileSynced(dir / "settings.json", doc.dump());
+        CHECK(Settings(dir / "settings.json").recoveryExportedFor().empty());
+    }
+    fs::remove_all(dir);
+    Vault::scryptN = kScryptN;
+}
+
+// ---- the brake on guessing at the unlock screen ------------------------------------------------------------------------------------
+static int64_t g_fakeNow = 1000000;
+static int64_t fakeClock() { return g_fakeNow; }
+
+static void test_unlock_guard() {
+    fs::path dir = tempDir("guard");
+    fs::path file = dir / "unlock-guard.json";
+    UnlockGuard::clock = &fakeClock;
+    g_fakeNow = 1700000000000LL;
+    {
+        UnlockGuard g(file, 3, 30);
+        CHECK_EQ(g.waitSeconds(), 0);
+        CHECK_EQ(g.triesBeforeWait(), 3);
+        g.failure();
+        g.failure();
+        CHECK_EQ(g.waitSeconds(), 0);          // two wrong tries: still free
+        CHECK_EQ(g.triesBeforeWait(), 1);
+        g.failure();                           // the third: the waiting starts
+        CHECK_EQ(g.waitSeconds(), 30);
+        CHECK_EQ(g.triesBeforeWait(), 0);
+        g_fakeNow += 10000;
+        CHECK_EQ(g.waitSeconds(), 20);
+        g_fakeNow += 500;
+        CHECK_EQ(g.waitSeconds(), 20);         // 19.5 s left rounds up: never says 0 too early
+        g_fakeNow += 19500;
+        CHECK_EQ(g.waitSeconds(), 0);          // 30 s after the wrong try: allowed
+        g.failure();                           // wrong again: another 30 s, not a fresh set of free tries
+        CHECK_EQ(g.waitSeconds(), 30);
+    }
+    {
+        // closing and reopening the program gives nothing back
+        UnlockGuard again(file, 3, 30);
+        CHECK_EQ(again.failures(), 4);
+        CHECK_EQ(again.waitSeconds(), 30);
+        g_fakeNow += 31000;
+        CHECK_EQ(again.waitSeconds(), 0);
+        again.success();                       // a right password forgives everything
+        CHECK_EQ(again.failures(), 0);
+        CHECK(!fileExists(file));
+        CHECK_EQ(UnlockGuard(file, 3, 30).failures(), 0);
+    }
+    {
+        // a clock set back must not freeze the wait for hours
+        UnlockGuard g(file, 1, 30);
+        g.failure();
+        g_fakeNow -= 3600000;
+        CHECK(g.waitSeconds() <= 30);
+        g.success();
+    }
+    {
+        // a damaged or hostile file is a clean start, and the settings are kept in range
+        writeFileSynced(file, "{broken");
+        CHECK_EQ(UnlockGuard(file, 3, 30).failures(), 0);
+        writeFileSynced(file, "{\"failures\": -5, \"last_failure_ms\": 1}");
+        CHECK_EQ(UnlockGuard(file, 3, 30).failures(), 0);
+        writeFileSynced(file, "{\"failures\": \"many\", \"last_failure_ms\": 1}");
+        CHECK_EQ(UnlockGuard(file, 3, 30).failures(), 0);
+        UnlockGuard odd(file, 99, 1);
+        CHECK_EQ(odd.freeAttempts(), 10);
+        CHECK_EQ(odd.delaySeconds(), 5);
+        UnlockGuard odd2(file, 0, 999999);
+        CHECK_EQ(odd2.freeAttempts(), 1);
+        CHECK_EQ(odd2.delaySeconds(), 3600);
+        removeFile(file);
+    }
+    {
+        // settings: defaults, a user's edit of settings.json, and nonsense that is ignored
+        Settings s(dir / "settings.json");
+        CHECK_EQ(s.unlockFreeAttempts(), 3);
+        CHECK_EQ(s.unlockDelaySeconds(), 30);
+        s.setSecureKeypad(true);   // saving writes the two numbers so the user can see and change them
+        Json doc = Json::parse(readAll(dir / "settings.json"));
+        CHECK(doc.get("unlock_free_attempts") != nullptr && doc.get("unlock_delay_seconds") != nullptr);
+        doc.set("unlock_free_attempts", Json(5));
+        doc.set("unlock_delay_seconds", Json(60));
+        writeFileSynced(dir / "settings.json", doc.dump());
+        CHECK_EQ(Settings(dir / "settings.json").unlockFreeAttempts(), 5);
+        CHECK_EQ(Settings(dir / "settings.json").unlockDelaySeconds(), 60);
+        doc.set("unlock_free_attempts", Json(0));
+        doc.set("unlock_delay_seconds", Json(1));
+        writeFileSynced(dir / "settings.json", doc.dump());
+        CHECK_EQ(Settings(dir / "settings.json").unlockFreeAttempts(), 3);
+        CHECK_EQ(Settings(dir / "settings.json").unlockDelaySeconds(), 30);
+    }
+    UnlockGuard::clock = &nowMs;
+    fs::remove_all(dir);
+}
+
 // ---- PIN, settings, keypad ---------------------------------------------------
 static void test_pin_settings_keypad() {
+    PinStore::kdfN = 1ull << 15;   // fast keys for the tests (the bounds allow it)
     fs::path dir = tempDir("pin");
     PinStore pins(dir / "pin.b2fa");
     CHECK(!pins.enabled());
     CHECK(throws<PinDisabled>([&] { pins.unlock(S("1234")); }));
     CHECK(throws<PinError>([&] { pins.enable(S("12"), S("master password 123")); }));       // too short
     CHECK(throws<PinError>([&] { pins.enable(S("12ab"), S("master password 123")); }));     // not digits
-    pins.enable(S("4271"), S("master pÃ¤ssword 123"));
+    pins.enable(S("427103"), S("master pÃ¤ssword 123"));
     CHECK(pins.enabled());
-    Secret back = pins.unlock(S("4271"));
+    Secret back = pins.unlock(S("427103"));
     CHECK(back.equals(S("master pÃ¤ssword 123")));
     // a wrong PIN is counted before the try, the right one resets the count, five wrong ones wipe the file
     for (int expected : {4, 3}) {
         bool ok = false;
-        try { pins.unlock(S("0000")); } catch (const WrongPin& e) { ok = e.attemptsLeft == expected; }
+        try { pins.unlock(S("000000")); } catch (const WrongPin& e) { ok = e.attemptsLeft == expected; }
         CHECK(ok);
     }
-    CHECK(pins.unlock(S("4271")).equals(S("master pÃ¤ssword 123")));   // reset to 5
-    for (int i = 0; i < 4; ++i) CHECK(throws<WrongPin>([&] { pins.unlock(S("0000")); }));
-    CHECK(throws<PinDisabled>([&] { pins.unlock(S("0000")); }));   // the fifth wrong one
+    CHECK(pins.unlock(S("427103")).equals(S("master pÃ¤ssword 123")));   // reset to 5
+    for (int i = 0; i < 4; ++i) CHECK(throws<WrongPin>([&] { pins.unlock(S("000000")); }));
+    CHECK(throws<PinDisabled>([&] { pins.unlock(S("000000")); }));   // the fifth wrong one
     CHECK(!pins.enabled());
     // a damaged file is removed, not trusted
     writeFileSynced(dir / "pin.b2fa", "{broken");
-    CHECK(throws<PinDisabled>([&] { pins.unlock(S("4271")); }));
+    CHECK(throws<PinDisabled>([&] { pins.unlock(S("427103")); }));
     CHECK(!pins.enabled());
 
     Settings s(dir / "settings.json");
@@ -480,7 +979,7 @@ static int emitInteropFiles(const fs::path& dir) {
     fs::path path = dir / "cpp_vault.b2fa";
     fs::remove(path);
     Vault v(path);
-    v.create(S("cpp-made-pass-1234"));
+    v.create(S("cpp-made-pass-1234"), false);
     v.add(makeService("GitHub", "JBSWY3DPEHPK3PXP", "GitHub", "octocat"));
     v.add(makeService("Caf\xC3\xA9 \xE2\x98\x95", "GEZDGNBVGY3TQOJQ", "Caf\xC3\xA9", "r\xC3\xA9n\xC3\xA9", "TOTP", 8, 60, "SHA256"));
     v.add(makeService("Counter", "MFRGGZDFMZTWQ2LK", "Counter", "me", "HOTP", 6, 30, "SHA1", 7));
@@ -493,7 +992,7 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::string(argv[1]) == "--emit") return emitInteropFiles(argv[2]);
     struct T { const char* name; std::function<void()> fn; } tests[] = {
         {"encodings", test_encodings}, {"secret", test_secret}, {"json", test_json}, {"crypto", test_crypto},
-        {"otp", test_otp},           {"twofas", test_twofas},   {"vault", test_vault}, {"pin, settings, keypad", test_pin_settings_keypad},
+        {"otp", test_otp},           {"twofas", test_twofas},   {"vault", test_vault}, {"pin, settings, keypad", test_pin_settings_keypad}, {"review fixes", test_review_fixes}, {"audit fixes", test_audit_fixes}, {"binding", test_binding}, {"unlock guard", test_unlock_guard},
         {"python interop", test_python_interop}};
     for (auto& t : tests) {
         g_test = t.name;

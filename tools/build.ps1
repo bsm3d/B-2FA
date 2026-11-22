@@ -41,8 +41,8 @@ $bytes = [IO.File]::ReadAllBytes($exe)
 $ascii = [Text.Encoding]::ASCII.GetString($bytes)
 $dlls = [regex]::Matches($ascii, '[A-Za-z0-9_\-]{3,40}\.dll') | ForEach-Object { $_.Value.ToLowerInvariant() } | Sort-Object -Unique
 Write-Host ("Imports: " + ($dlls -join ', '))
-$forbidden = $dlls | Where-Object { $_ -match '^(vcruntime|msvcp|msvcr|ucrtbase|api-ms-win-crt|python|qt\d|libcrypto|libssl)' }
-if ($forbidden) { throw ("The program imports runtime DLLs it must not need: " + ($forbidden -join ', ')) }
+$forbidden = $dlls | Where-Object { $_ -match '^(vcruntime|msvcp|msvcr|ucrtbase|api-ms-win-crt|python|qt\d|libcrypto|libssl|ws2_32|wsock32|winhttp|wininet|urlmon|iphlpapi|mswsock|dnsapi)' }
+if ($forbidden) { throw ("The program imports a runtime or network DLL it must not need: " + ($forbidden -join ', ')) }
 foreach ($needle in @('.pyc', 'python3')) { if ($ascii.Contains($needle)) { throw "Unexpected '$needle' in the program" } }
 if ((Get-Item $exe).Length -gt 4MB) { throw 'The program is unexpectedly big' }
 Write-Host ("Program: {0:N0} bytes, no runtime DLL needed" -f (Get-Item $exe).Length)

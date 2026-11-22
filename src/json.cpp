@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
+#include <unordered_map>
 
 #include "util.h"
 
@@ -12,6 +13,7 @@ namespace b2 {
 namespace {
 
 constexpr int kMaxDepth = 200;
+constexpr size_t kMaxNodes = 1500000;   // about 130 MB of memory at most for one document
 
 class Parser {
 public:
@@ -29,6 +31,7 @@ public:
 private:
     std::string_view s_;
     size_t i_ = 0;
+    size_t nodes_ = 0;
 
     [[noreturn]] void fail(const char* what) const { throw JsonError(what); }
     void skipWs() {
@@ -39,6 +42,7 @@ private:
 
     Json value(int depth) {
         if (depth > kMaxDepth) fail("The document is nested too deeply");
+        if (++nodes_ > kMaxNodes) fail("The document has too many values");
         if (eof()) fail("Unexpected end of the document");
         char c = s_[i_];
         if (c == '{') return object(depth);
@@ -53,6 +57,7 @@ private:
 
     Json object(int depth) {
         Json obj = Json::object();
+        std::unordered_map<std::string, size_t> index;   // key -> place: a hostile file with a million keys stays fast
         ++i_;
         skipWs();
         if (peek() == '}') { ++i_; return obj; }
@@ -65,7 +70,13 @@ private:
             ++i_;
             skipWs();
             Json v = value(depth + 1);
-            obj.set(key, std::move(v));  // a repeated key keeps its first place, last value wins (Python)
+            auto found = index.find(key);
+            if (found != index.end()) {
+                obj.members()[found->second].second = std::move(v);   // a repeated key keeps its first place, last value wins
+            } else {
+                index.emplace(key, obj.members().size());
+                obj.members().emplace_back(std::move(key), std::move(v));
+            }
             skipWs();
             if (peek() == ',') { ++i_; continue; }
             if (peek() == '}') { ++i_; return obj; }
@@ -120,6 +131,13 @@ private:
     std::string string() {
         ++i_;  // opening quote
         std::string out;
+        {
+            // find the end first, so the result is allocated once: growing a string leaves old, smaller copies of
+            // it in freed memory, and this is where account secrets come from
+            size_t j = i_;
+            while (j < s_.size() && s_[j] != '"') j += (s_[j] == '\\' && j + 1 < s_.size()) ? 2 : 1;
+            out.reserve(j - i_);
+        }
         while (true) {
             if (eof()) fail("Unterminated string");
             unsigned char c = static_cast<unsigned char>(s_[i_++]);
@@ -177,7 +195,8 @@ private:
     }
 };
 
-void escapeInto(std::string& out, const std::string& s) {
+template <class S>
+void escapeInto(S& out, const std::string& s) {
     out += '"';
     for (unsigned char c : s) {
         switch (c) {
@@ -200,7 +219,8 @@ void escapeInto(std::string& out, const std::string& s) {
     out += '"';
 }
 
-void dumpInto(std::string& out, const Json& j) {
+template <class S>
+void dumpInto(S& out, const Json& j) {
     switch (j.type()) {
         case Json::Type::Null: out += "null"; break;
         case Json::Type::Bool: out += j.asBool() ? "true" : "false"; break;
@@ -244,9 +264,11 @@ Json Json::parse(std::string_view text) {
 }
 
 std::string Json::dump() const {
-    std::string out;
+    // built in a buffer whose freed blocks are zeroed (growing it must not leave partial copies behind), then
+    // copied once into the result; the caller wipes the result when it holds secrets
+    std::basic_string<char, std::char_traits<char>, ZeroAllocator<char>> out;
     dumpInto(out, *this);
-    return out;
+    return std::string(out.data(), out.size());
 }
 
 bool Json::isInteger() const {
@@ -311,6 +333,25 @@ bool Json::erase(std::string_view key) {
         if (it->first == key) { members_.erase(it); return true; }
     }
     return false;
+}
+
+void Json::wipe() {
+    secureZero(text_.data(), text_.size());
+    text_.clear();
+    for (auto& m : members_) {
+        secureZero(m.first.data(), m.first.size());
+        m.second.wipe();
+    }
+    for (Json& i : items_) i.wipe();
+    members_.clear();
+    items_.clear();
+    type_ = Type::Null;
+    bool_ = false;
+}
+
+void wipeJsonList(std::vector<Json>& list) {
+    for (Json& j : list) j.wipe();
+    list.clear();
 }
 
 std::string Json::stringOr(std::string_view key, std::string def) const {

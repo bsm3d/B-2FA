@@ -54,8 +54,14 @@ protected:
     void onCommand(int id, int code, HWND ctl) override {
         if (code == EN_SETFOCUS && pad_) pad_->onEditFocus(ctl);
         if (id == IDOK && code == BN_CLICKED) return accept();
-        if (id == IDCANCEL) return close(0);
+        if (id == IDCANCEL) return onClose();
         if (pad_ && code == BN_CLICKED) pad_->onCommand(id);
+    }
+
+    void onClose() override {
+        wipeEdit(e1_);
+        if (e2_) wipeEdit(e2_);
+        close(0);
     }
 
 private:
@@ -105,6 +111,9 @@ class AccountDialog : public Modal {
 public:
     AccountDialog(HWND owner, const Json* existing)
         : Modal(owner, existing ? L"Edit account" : L"Add account"), existing_(existing ? std::optional<Json>(*existing) : std::nullopt) {}
+    ~AccountDialog() override {
+        if (existing_) existing_->wipe();
+    }
     Json result;
 
 protected:
@@ -177,8 +186,14 @@ protected:
             return layoutBelow();
         }
         if (id == IDOK && code == BN_CLICKED) return save();
-        if (id == IDCANCEL) return close(0);
+        if (id == IDCANCEL) return onClose();
         (void)ctl;
+    }
+
+    void onClose() override {
+        // the link and the secret may hold the secret key in clear: overwrite them
+        for (HWND e : {uri_, secret_, name_, account_}) if (e) wipeEdit(e);
+        close(0);
     }
 
 private:
@@ -247,6 +262,7 @@ private:
         } catch (const std::exception& e) {
             return setMessage(widen(e.what()));
         }
+        secureZero(text.data(), text.size());   // the link carries the secret
         setMessage(L"");
         setText(name_, l.name);
         setText(account_, l.account);
@@ -258,6 +274,7 @@ private:
         for (HWND c : combo_) SendMessageW(c, CB_SETEDITSEL, 0, MAKELPARAM(0, 0));
         issuer_ = l.issuer;
         counter_ = l.params.counter;
+        wipeString(l.secret);
         bool nonDefault = l.params.type != "TOTP" || l.params.algorithm != "SHA1" || l.params.digits != 6 || l.params.period != 30;
         if (nonDefault && !advShown_) { advShown_ = true; layoutBelow(); }
     }
@@ -276,9 +293,11 @@ private:
         int digits = 0, period = 0;
         if (!wholeNumber(comboText(2), digits) || !wholeNumber(comboText(3), period))
             return setMessage(L"Digits, period and counter must be whole numbers");
+        std::string secretText(secret.view());
         try {
-            Json made = makeService(name, std::string(secret.view()), issuer_.empty() ? name : issuer_, account, comboText(0), digits, period,
+            Json made = makeService(name, secretText, issuer_.empty() ? name : issuer_, account, comboText(0), digits, period,
                                     comboText(1), counter_);
+            secureZero(secretText.data(), secretText.size());
             currentCode(made, nowSeconds());   // proves the secret computes a code
             if (!existing_) {
                 result = std::move(made);
@@ -295,9 +314,10 @@ private:
                 result = std::move(s);
             }
         } catch (const std::exception& e) {
+            secureZero(secretText.data(), secretText.size());
             return setMessage(widen(e.what()));
         }
-        wipeEdit(secret_);
+        for (HWND e : {uri_, secret_}) if (e) wipeEdit(e);
         close(1);
     }
 };

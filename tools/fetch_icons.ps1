@@ -12,8 +12,11 @@
 
 .PARAMETER Source
   A folder that already holds services.json and icons\ (no download).
+.PARAMETER Ref
+  The commit of the 2FAS repository to take the pack from. It is pinned (31 Oct 2026) so that a later change
+  in that repository is never installed unseen. Pass 'HEAD' to take the latest, at your own risk.
 #>
-param([string]$Source)
+param([string]$Source, [string]$Ref = '4ad83b2b94967993db55dd36dcb2e258646eb7b6')
 
 $ErrorActionPreference = 'Stop'
 $repo = 'https://github.com/twofas/2fas-android.git'
@@ -26,10 +29,24 @@ try {
         if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'git is needed to download the pack.' }
         $tmp = Join-Path ([IO.Path]::GetTempPath()) ('b2fa-icons-' + [guid]::NewGuid().ToString('N'))
         Write-Host 'Downloading the 2FAS asset folder (about 13 MB)...'
-        git clone --depth 1 --filter=blob:none --sparse $repo (Join-Path $tmp 'repo') 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'git clone failed.' }
-        git -C (Join-Path $tmp 'repo') sparse-checkout set $assets 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'git sparse-checkout failed.' }
+        $clone = Join-Path $tmp 'repo'
+        # git writes progress to stderr, which Windows PowerShell would turn into an error: judge by the exit code
+        function Invoke-Git([string[]]$GitArgs) {
+            $old = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            & git @GitArgs 2>&1 | Out-Null
+            $code = $LASTEXITCODE
+            $ErrorActionPreference = $old
+            return $code
+        }
+        if ((Invoke-Git @('clone', '--no-checkout', '--depth', '1', '--filter=blob:none', $repo, $clone)) -ne 0) { throw 'git clone failed.' }
+        if ((Invoke-Git @('-C', $clone, 'sparse-checkout', 'set', $assets)) -ne 0) { throw 'git sparse-checkout failed.' }
+        if ($Ref -ne 'HEAD') {
+            if ((Invoke-Git @('-C', $clone, 'fetch', '--depth', '1', 'origin', $Ref)) -ne 0) { throw "git fetch of $Ref failed." }
+            if ((Invoke-Git @('-C', $clone, 'checkout', 'FETCH_HEAD')) -ne 0) { throw 'git checkout failed.' }
+        } else {
+            if ((Invoke-Git @('-C', $clone, 'checkout', 'HEAD')) -ne 0) { throw 'git checkout failed.' }
+        }
         $Source = Join-Path (Join-Path $tmp 'repo') ($assets -replace '/', '\')
     }
     $services = Join-Path $Source 'services.json'

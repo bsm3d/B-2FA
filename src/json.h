@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "util.h"
+
 namespace b2 {
 
 struct JsonError : std::runtime_error {
@@ -25,6 +27,13 @@ public:
     using Member = std::pair<std::string, Json>;
 
     Json() = default;
+    // Every text of a document is overwritten when the document goes away (account secrets live in here),
+    // also the texts of copies and of moved-from objects.
+    ~Json() { wipeBuffers(); }
+    Json(const Json&) = default;
+    Json(Json&&) noexcept = default;
+    Json& operator=(const Json&) = default;
+    Json& operator=(Json&&) noexcept = default;
     Json(std::nullptr_t) {}
     Json(bool b) : type_(Type::Bool), bool_(b) {}
     Json(int v) : Json(static_cast<int64_t>(v)) {}
@@ -76,12 +85,22 @@ public:
     // handy readers that never throw: the default when absent or of another type
     std::string stringOr(std::string_view key, std::string def = "") const;
 
+    // Overwrite every text of this document with zeros, then empty it (account secrets live in here).
+    void wipe();
+
 private:
+    void wipeBuffers() {
+        secureZero(text_.data(), text_.capacity() + 1);
+        for (auto& m : members_) secureZero(m.first.data(), m.first.capacity() + 1);
+    }
     Type type_ = Type::Null;
     bool bool_ = false;
     std::string text_;                // string value, or the original text of a number
     std::vector<Json> items_;
     std::vector<Member> members_;
 };
+
+// wipe() on each element, then empty the list
+void wipeJsonList(std::vector<Json>& list);
 
 }  // namespace b2

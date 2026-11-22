@@ -9,7 +9,6 @@
 // Anything that copies the old data (the .bak and the automatic backups) is purged when the
 // master password changes or an account is deleted, so a stale copy cannot outlive the change.
 //
-// The file format is the one of the earlier Python prototype of B-2FA: vaults made by either open in both.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
@@ -34,14 +33,15 @@ struct WrongMasterPassword : VaultError {
     WrongMasterPassword() : VaultError("Wrong master password") {}
 };
 
-constexpr uint64_t kScryptN = 1ull << 17;   // 128 MiB with r = 8
+constexpr uint64_t kScryptN = 1ull << 18;   // 256 MiB with r = 8: the most the format accepts
 constexpr uint32_t kScryptR = 8, kScryptP = 1;
-constexpr size_t kMinMasterChars = 12;
-constexpr size_t kMinExportChars = 12;
+constexpr size_t kMinMasterChars = 16;   // a passphrase of 4 or 5 random words
+constexpr size_t kMinExportChars = 16;   // the 2FAS file format is weak: only a long password protects an export
 constexpr size_t kKeepBackups = 10;
 constexpr double kBackupDelaySeconds = 15.0;
 constexpr size_t kMaxText = 256;
 constexpr size_t kMaxServices = 10000;
+constexpr size_t kMaxServiceBytes = 64 * 1024;   // one account, as JSON: imported entries keep unknown fields, so cap them
 extern const char* const kDefaultIconCollection;
 
 // ---- services (2FAS format) ---------------------------------------------
@@ -67,7 +67,9 @@ public:
     const Secret& masterPassword() const;     // only to wrap it behind the PIN
     bool checkPassword(const Secret& password) const;
 
-    void create(const Secret& password);
+    // `bind`: also mix a key wrapped by Windows for this account and PC (device.b2fa) into the vault key. A bound
+    // vault file does not open anywhere else, not even with the master password.
+    void create(const Secret& password, bool bind = true);
     void unlock(const Secret& password);
     void changePassword(const Secret& oldPassword, const Secret& newPassword);
     void save(bool backup = true);
@@ -77,7 +79,11 @@ public:
     std::optional<std::filesystem::path> autoBackup();
     const std::string& lastBackupError() const { return lastBackupError_; }
     const std::filesystem::path& backupsDir() const { return backupsDir_; }
+    // Set by create() when it found copies of an earlier vault: they were moved here, not deleted.
+    const std::filesystem::path& keptCopiesDir() const { return keptCopies_; }
     const std::filesystem::path& path() const { return path_; }
+    bool bound() const { return header_.bound; }             // valid while unlocked
+    std::string deviceId() const { return deviceId_; }       // public id of the device key, empty when not bound
 
     // accounts
     std::vector<Json> services, groups;
@@ -92,14 +98,16 @@ public:
     std::vector<Json> exportableServices() const;
     void exportBackup(const std::filesystem::path& path, const Secret& password);
 
-    // key derivation cost: lowered by the tests only
+    // key derivation cost and size limit: lowered by the tests only
     static uint64_t scryptN;
+    static uint64_t maxFileBytes;
 
 private:
     struct Header {
         std::string salt;      // base64
         uint64_t n = 0;
         uint32_t r = 0, p = 0;
+        bool bound = false;
     };
     std::filesystem::path path_, backupsDir_;
     bool unlocked_ = false;
@@ -110,7 +118,12 @@ private:
     bool backupDue_ = false;
     uint64_t backupDueAt_ = 0;
     std::string lastBackupError_;
+    std::filesystem::path keptCopies_;
+    Bytes deviceSecret_;
+    std::string deviceId_;
 
+    bool verifyWritten();
+    void keepCopiesOfEarlierVault();
     Header derive(const Secret& password, Bytes& key) const;
     void purgeCopies();
     std::vector<std::filesystem::path> autoBackups() const;

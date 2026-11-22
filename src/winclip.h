@@ -8,7 +8,8 @@
 namespace b2::clip {
 
 bool setText(const std::string& utf8);   // false if the clipboard could not be opened
-bool getText(std::string& utf8);         // false if it holds no text
+// 1 = text read, 0 = the clipboard holds no text, -1 = it could not be opened (busy): try again later
+int getText(std::string& utf8);
 bool clear();
 
 }  // namespace b2::clip

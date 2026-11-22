@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <unordered_map>
 
 #include "keypad_layout.h"
 
@@ -23,6 +24,7 @@ const wchar_t kPropRole[] = L"b2role";
 const wchar_t kPropStyle[] = L"b2style";
 const wchar_t kPropHover[] = L"b2hover";
 const wchar_t kPropLock[] = L"b2lock";
+std::unordered_map<HWND, wchar_t> g_keyChars;   // keypad labels live in this program's memory only
 
 HFONT makeFont(const wchar_t* face, int pt, int weight) {
     return CreateFontW(-MulDiv(pt, static_cast<int>(g_dpi), 72), 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
@@ -74,9 +76,13 @@ bool pump(HWND dialog) {
     }
     if (got < 0) return false;
     switch (msg.message) {
-        case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_KEYDOWN: case WM_MOUSEWHEEL:
-            touchActivity();
+        case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_KEYDOWN: case WM_MOUSEWHEEL: {
+            // Only a person at the keyboard or mouse counts: a message another program posts to this window does
+            // not reset the auto-lock (the system records the last REAL input).
+            LASTINPUTINFO li{sizeof(li), 0};
+            if (GetLastInputInfo(&li) && static_cast<DWORD>(GetTickCount() - li.dwTime) < 2000) touchActivity();
             break;
+        }
     }
     if (dialog && (msg.hwnd == dialog || IsChild(dialog, msg.hwnd))) {
         if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) {
@@ -120,7 +126,12 @@ LRESULT CALLBACK buttonProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWO
         case WM_SETCURSOR:
             SetCursor(LoadCursorW(nullptr, IDC_HAND));
             return TRUE;
+        case WM_LBUTTONDBLCLK:
+            // a second quick click arrives as a double click, which a button turns into BN_DOUBLECLICKED:
+            // the keypad would drop the repeated letter. Treat it as one more ordinary click.
+            return DefSubclassProc(h, WM_LBUTTONDOWN, w, l);
         case WM_NCDESTROY:
+            g_keyChars.erase(h);
             RemovePropW(h, kPropHover);
             RemovePropW(h, kPropStyle);
             RemovePropW(h, kPropRole);
@@ -139,6 +150,12 @@ HWND makeButton(HWND parent, int id, const std::wstring& text, BtnStyle style, b
     applyFont(h, style == BtnStyle::Key ? Role::Key : Role::Body);
     SetWindowSubclass(h, buttonProc, 1, 0);
     return h;
+}
+
+void setKeyLabel(HWND button, wchar_t ch) {
+    g_keyChars[button] = ch;   // not a window property and not window text: other programs can read both
+    SetWindowTextW(button, L"");
+    InvalidateRect(button, nullptr, FALSE);
 }
 
 void setButtonText(HWND button, const std::wstring& text) {
@@ -160,7 +177,14 @@ void drawButton(const DRAWITEMSTRUCT* d) {
     FillRect(d->hDC, &d->rcItem, br);
     DeleteObject(br);
     wchar_t buf[128];
-    GetWindowTextW(d->hwndItem, buf, 128);
+    auto keyIt = g_keyChars.find(d->hwndItem);
+    wchar_t keyChar = keyIt == g_keyChars.end() ? L'\0' : keyIt->second;
+    if (keyChar) {
+        buf[0] = keyChar;
+        buf[1] = 0;
+    } else {
+        GetWindowTextW(d->hwndItem, buf, 128);
+    }
     HGDIOBJ old = SelectObject(d->hDC, reinterpret_cast<HFONT>(SendMessageW(d->hwndItem, WM_GETFONT, 0, 0)));
     SetBkMode(d->hDC, TRANSPARENT);
     SetTextColor(d->hDC, text);
@@ -336,6 +360,7 @@ void registerModalClass(WNDPROC proc) {
     if (done) return;
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = proc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -390,7 +415,14 @@ int Modal::run() {
                             owner_, nullptr, GetModuleHandleW(nullptr), this);
     if (!hwnd_) return 0;
     g_modals.push_back(this);
-    build();
+    try {
+        build();
+    } catch (...) {
+        g_modals.erase(std::remove(g_modals.begin(), g_modals.end(), this), g_modals.end());   // never leave a dangling pointer behind
+        DestroyWindow(hwnd_);
+        hwnd_ = nullptr;
+        throw;
+    }
     if (g_modalHook) g_modalHook(hwnd_);
     // centred over the owner, a little high
     RECT o{}, d{};
@@ -423,7 +455,7 @@ void Modal::close(int result) {
 
 void Modal::closeAll() {
     std::vector<Modal*> copy = g_modals;
-    for (Modal* m : copy) m->close(0);
+    for (Modal* m : copy) m->onClose();   // each dialog wipes its fields before it goes
 }
 
 HWND Modal::current() { return g_modals.empty() ? nullptr : g_modals.back()->hwnd_; }
@@ -492,7 +524,9 @@ void SecureInput::build() {
     keys_.clear();
     auto add = [&](const std::wstring& token, const std::wstring& label, BtnStyle style) {
         int id = idBase_ + 1 + static_cast<int>(pad_.size());
-        HWND b = makeButton(parent_, id, label, style, false);
+        bool secretKey = !isToken(token) && token.size() == 1;   // a character key: its label is kept out of the window text
+        HWND b = makeButton(parent_, id, secretKey ? std::wstring() : label, style, false);
+        if (secretKey) setKeyLabel(b, token[0]);
         if (isToken(token) && token != kBack) applyFont(b, Role::Small);
         pad_.push_back(b);
         keys_.push_back(token);
@@ -615,7 +649,7 @@ void SecureInput::shuffleKeys() {
         if (isToken(keys_[i]) || keys_[i] == L"<") continue;
         std::wstring ch(1, d[next++]);
         keys_[i] = ch;
-        setButtonText(pad_[i], ch);
+        setKeyLabel(pad_[i], ch[0]);
     }
 }
 

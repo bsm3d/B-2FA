@@ -94,6 +94,7 @@ HashAlg algOf(const std::string& a) {
 
 std::string cleanSecretText(const std::string& s) {
     std::string out;
+    out.reserve(s.size());   // no regrowth: it would leave smaller copies of the secret in freed memory
     for (char c : s) {
         if (c == ' ' || c == '-' || c == '\t' || c == '\r' || c == '\n') continue;
         out += (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c;
@@ -102,8 +103,14 @@ std::string cleanSecretText(const std::string& s) {
     return out;
 }
 
+struct WipeAtExit {
+    std::string& s;
+    ~WipeAtExit() { wipeString(s); }
+};
+
 Bytes secretKey(const std::string& secret) {
     std::string cleaned = cleanSecretText(secret);
+    WipeAtExit wipe{cleaned};
     if (cleaned.empty()) throw OtpError("The secret is empty");
     size_t padded = cleaned.size() + ((8 - cleaned.size() % 8) % 8);
     if (padded > kMaxSecretChars) throw OtpError("The secret is too long");
@@ -293,6 +300,7 @@ OtpLink parseOtpauth(const std::string& uriIn) {
     auto arg = [&](const char* k) -> Json { return params.count(k) ? Json(params[k]) : Json(); };
     OtpLink link;
     link.params = validateParams(Json(kind), arg("digits"), arg("period"), arg("algorithm"), arg("counter"));
+    for (auto& kv : params) wipeString(kv.second);   // the link and its pieces carried the secret
     link.name = truncateChars(issuer.empty() ? account : issuer, 256);
     link.issuer = truncateChars(issuer, 256);
     link.account = truncateChars(account, 256);

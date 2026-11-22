@@ -60,17 +60,17 @@ bool setText(const std::string& utf8) {
     return true;
 }
 
-bool getText(std::string& utf8) {
+int getText(std::string& utf8) {
     utf8.clear();
-    if (!openClipboard()) return false;
+    if (!openClipboard()) return -1;
     Closer closer;
     HANDLE h = GetClipboardData(CF_UNICODETEXT);
-    if (!h) return false;
+    if (!h) return 0;
     const wchar_t* p = static_cast<const wchar_t*>(GlobalLock(h));
-    if (!p) return false;
+    if (!p) return 0;
     utf8 = narrow(p);
     GlobalUnlock(h);
-    return true;
+    return 1;
 }
 
 bool clear() {

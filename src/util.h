@@ -62,6 +62,12 @@ private:
     std::vector<char, ZeroAllocator<char>> data_;
 };
 
+// Overwrite the whole buffer of a string (also the small-string buffer and the unused capacity), then empty it.
+inline void wipeString(std::string& s) {
+    secureZero(s.data(), s.capacity() + 1);
+    s.clear();
+}
+
 // ---- text ----------------------------------------------------------------
 std::wstring widen(std::string_view utf8);
 std::string narrow(std::wstring_view wide);

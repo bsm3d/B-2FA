@@ -14,7 +14,6 @@
 #endif
 
 [Setup]
-; same id as the installer of the earlier Python prototype, so this one installs over it
 AppId={{3C6F1D52-8A47-4E0B-9B1E-72D5A4C0B2F8}
 AppName=B-2FA
 AppVersion={#AppVersion}
@@ -44,10 +43,6 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
-
-[InstallDelete]
-; the Python prototype shipped a runtime in this folder: remove what this edition does not use
-Type: filesandordirs; Name: "{app}\_internal"
 
 [Files]
 Source: "{#SourceDir}\B-2FA.exe"; DestDir: "{app}"; Flags: ignoreversion

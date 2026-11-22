@@ -74,8 +74,10 @@ Json readBackup(const std::filesystem::path& path) {
     try {
         content = Json::parse(text);
     } catch (const JsonError& e) {
+        wipeString(text);
         throw BackupError(std::string("Cannot read this file as a backup (") + e.what() + ")");
     }
+    wipeString(text);   // an unencrypted backup holds the secrets in clear
     if (!content.isObject() || !(content.get("services") || content.get("servicesEncrypted")))
         throw BackupError("This does not look like a 2FAS backup");
     auto truthy = [](const Json* v) {

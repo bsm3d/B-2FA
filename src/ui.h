@@ -50,6 +50,9 @@ enum class BtnStyle { Normal, Primary, Link, LinkLeft, Key };   // LinkLeft: a l
 HWND makeButton(HWND parent, int id, const std::wstring& text, BtnStyle style, bool tabStop = true);
 void drawButton(const DRAWITEMSTRUCT* d);   // call from the parent's WM_DRAWITEM
 void setButtonText(HWND button, const std::wstring& text);
+// A keypad key shows its character without storing it as window text: any other program of the session can read
+// the text of a window (GetWindowText), and with a mouse hook that would reveal which key sits where.
+void setKeyLabel(HWND button, wchar_t ch);
 
 HWND makeEdit(HWND parent, int id, bool password);
 void lockPhysicalKeyboard(HWND edit, bool locked);   // typed characters ignored; paste and Enter still work
@@ -138,7 +141,9 @@ public:
     // Place the link (if any) and the pad at x,y (the pad is centred in `width`). Returns the height used.
     int layout(int x, int y, int width);
     bool onCommand(int id);                 // a key or the link was pressed
-    void onEditFocus(HWND edit) { focus_ = edit; }
+    void onEditFocus(HWND edit) {   // only our own fields can become the target (a forged notification must not redirect the typing)
+        for (HWND e : edits_) if (e == edit) { focus_ = edit; return; }
+    }
     bool visible() const { return !pad_.empty(); }
     static constexpr int kIdCount = 128;
     std::function<void()> onLayoutChanged;   // the pad appeared or disappeared: the owner lays out again

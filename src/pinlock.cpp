@@ -2,73 +2,50 @@
 #include "pinlock.h"
 
 #include <windows.h>
-#include <dpapi.h>
 
 #include "crypto.h"
+#include "winwrap.h"
 #include "fileio.h"
 #include "json.h"
 #include "paths.h"
 
 namespace b2 {
 
+uint64_t PinStore::kdfN = 1ull << 19;   // 512 MiB, about 0.7 s: what an offline guess costs
+
 namespace {
 
-DATA_BLOB blobOf(const Bytes& b) {
-    static uint8_t kEmpty = 0;
-    DATA_BLOB d;
-    d.cbData = static_cast<DWORD>(b.size());
-    d.pbData = b.empty() ? &kEmpty : const_cast<uint8_t*>(b.data());
-    return d;
-}
+constexpr uint64_t kMinN = 1ull << 15, kMaxN = 1ull << 20;  // bounds accepted from a file (it is untrusted input)
 
-Bytes takeBlob(DATA_BLOB& out) {
-    Bytes r(out.pbData, out.pbData + out.cbData);
-    secureZero(out.pbData, out.cbData);
-    LocalFree(out.pbData);
-    return r;
-}
-
-Bytes entropyFor(const Secret& pin, const Bytes& salt) {
-    return scrypt(reinterpret_cast<const uint8_t*>(pin.data()), pin.size(), salt, 1u << 15, 8, 1, 32);
+Bytes entropyFor(const Secret& pin, const Bytes& salt, uint64_t n) {
+    return scrypt(reinterpret_cast<const uint8_t*>(pin.data()), pin.size(), salt, n, 8, 1, 32);
 }
 
 Bytes protect(const Bytes& data, const Bytes& entropy) {
-    DATA_BLOB in = blobOf(data), ent = blobOf(entropy), out{};
-    if (!CryptProtectData(&in, L"B-2FA PIN", &ent, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out))
-        throw PinError("Windows could not protect the PIN data (error " + std::to_string(GetLastError()) + ")");
-    return takeBlob(out);
+    Bytes out;
+    unsigned long err = 0;
+    if (!dpapiProtect(data, entropy, L"B-2FA PIN", out, err))
+        throw PinError("Windows could not protect the PIN data (error " + std::to_string(err) + ")");
+    return out;
 }
 
-bool unprotect(const Bytes& data, const Bytes& entropy, Bytes& result) {
-    DATA_BLOB in = blobOf(data), ent = blobOf(entropy), out{};
-    if (!CryptUnprotectData(&in, nullptr, &ent, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &out)) return false;
-    result = takeBlob(out);
-    return true;
-}
+bool unprotect(const Bytes& data, const Bytes& entropy, Bytes& result) { return dpapiUnprotect(data, entropy, result); }
 
-}  // namespace
+struct Doc {
+    uint64_t n = 0;
+    std::string salt, blob;
+    int64_t left = 0;
+};
 
-WrongPin::WrongPin(int left)
-    : PinError("Wrong PIN. " + std::to_string(left) + " tr" + (left == 1 ? "y" : "ies") + " left."), attemptsLeft(left) {}
-
-void checkPinFormat(const Secret& pin) {
-    bool ok = pin.size() >= kPinMin && pin.size() <= kPinMax;
-    for (char c : pin.view()) if (c < '0' || c > '9') ok = false;
-    if (!ok) throw PinError("The PIN must be 4 to 8 digits");
-}
-
-PinStore::PinStore(std::filesystem::path path) : path_(path.empty() ? paths::dataDir() / L"pin.b2fa" : std::move(path)) {}
-
-bool PinStore::enabled() const { return fileExists(path_); }
-
-void PinStore::disable() { removeFile(path_); }
-
-static void writeDoc(const std::filesystem::path& path, const std::string& salt, const std::string& blob, int left) {
+void writeDoc(const std::filesystem::path& path, const Doc& d) {
     Json doc = Json::object();
     doc.set("version", Json(1));
-    doc.set("salt", Json(salt));
-    doc.set("blob", Json(blob));
-    doc.set("attempts_left", Json(left));
+    doc.set("n", Json(d.n));
+    doc.set("r", Json(8));
+    doc.set("p", Json(1));
+    doc.set("salt", Json(d.salt));
+    doc.set("blob", Json(d.blob));
+    doc.set("attempts_left", Json(d.left));
     std::filesystem::path tmp = path;
     tmp += L".tmp";
     try {
@@ -80,63 +57,109 @@ static void writeDoc(const std::filesystem::path& path, const std::string& salt,
     }
 }
 
-void PinStore::enable(const Secret& pin, const Secret& masterPassword) {
-    checkPinFormat(pin);
+void wrapInto(Doc& d, const Secret& pin, const Secret& master, uint64_t n) {
     Bytes salt = randomBytes(16);
-    Bytes entropy = entropyFor(pin, salt);
-    Bytes master(masterPassword.view().begin(), masterPassword.view().end());
-    Bytes wrapped = protect(master, entropy);
-    secureZero(master.data(), master.size());
+    Bytes entropy = entropyFor(pin, salt, n);
+    Bytes m(master.view().begin(), master.view().end());
+    Bytes wrapped = protect(m, entropy);
+    secureZero(m.data(), m.size());
     secureZero(entropy.data(), entropy.size());
-    writeDoc(path_, base64Encode(salt), base64Encode(wrapped), kPinMaxAttempts);
+    d.n = n;
+    d.salt = base64Encode(salt);
+    d.blob = base64Encode(wrapped);
+    d.left = kPinMaxAttempts;
+}
+
+}  // namespace
+
+WrongPin::WrongPin(int left)
+    : PinError("Wrong PIN. " + std::to_string(left) + " tr" + (left == 1 ? "y" : "ies") + " left."), attemptsLeft(left) {}
+
+void checkPinFormat(const Secret& pin) {
+    bool ok = pin.size() >= kPinMin && pin.size() <= kPinMax;
+    for (char c : pin.view()) if (c < '0' || c > '9') ok = false;
+    if (!ok) throw PinError("The PIN must be " + std::to_string(kPinMin) + " to " + std::to_string(kPinMax) + " digits");
+}
+
+PinStore::PinStore(std::filesystem::path path) : path_(path.empty() ? paths::dataDir() / L"pin.b2fa" : std::move(path)) {}
+
+bool PinStore::enabled() const { return fileExists(path_); }
+
+void PinStore::disable() { removeFile(path_); }
+
+void PinStore::enable(const Secret& pin, const Secret& masterPassword) {
+    checkPinFormat(pin);   // at least 6 digits: the offline cost of guessing grows with every digit
+    Doc d;
+    wrapInto(d, pin, masterPassword, kdfN);
+    writeDoc(path_, d);
 }
 
 Secret PinStore::unlock(const Secret& pin) {
     if (!enabled()) throw PinDisabled("No PIN is set");
+    // A text that cannot be a PIN cannot be right either, so it does not cost an attempt (an empty field
+    // and the Enter key must not be able to wipe the PIN).
+    checkPinFormat(pin);
+    Doc d;
     Bytes salt, blob;
-    int64_t left = 0;
-    std::string saltText, blobText;
     try {
         std::string text;
-        readFile(path_, text, 1 << 20);
+        try {
+            readFile(path_, text, 1 << 20);
+        } catch (const IoError&) {
+            // a virus scanner or a backup tool may hold the file for a moment: that is not a damaged file
+            throw PinError("The PIN file cannot be read right now. Try again.");
+        }
         Json doc = Json::parse(text);
+        int64_t version = 0;
+        const Json* v = doc.get("version");
         const Json* s = doc.get("salt");
         const Json* b = doc.get("blob");
         const Json* a = doc.get("attempts_left");
-        if (!s || !b || !a || !s->isString() || !b->isString() || !a->toInt64(left)) throw JsonError("fields");
+        if (!v || !v->toInt64(version) || version != 1) throw JsonError("version");
+        if (!s || !b || !a || !s->isString() || !b->isString() || !a->toInt64(d.left)) throw JsonError("fields");
         if (!base64Decode(s->asString(), salt) || !base64Decode(b->asString(), blob)) throw JsonError("base64");
-        saltText = s->asString();
-        blobText = b->asString();
+        uint64_t n = 0, r = 0, p = 0;
+        const Json *jn = doc.get("n"), *jr = doc.get("r"), *jp = doc.get("p");
+        if (!jn || !jr || !jp || !jn->toUInt64(n) || !jr->toUInt64(r) || !jp->toUInt64(p)) throw JsonError("kdf");
+        if (n < kMinN || n > kMaxN || (n & (n - 1)) != 0 || r != 8 || p != 1) throw JsonError("kdf bounds");   // never let a file pick the cost
+        d.n = n;
+        d.salt = s->asString();
+        d.blob = b->asString();
+    } catch (const PinError&) {
+        throw;
     } catch (const std::exception&) {
         disable();
         throw PinDisabled("The PIN file is damaged and was removed. Use the master password.");
     }
-    if (left <= 0) {
+    if (d.left <= 0) {
         disable();
         throw PinDisabled("Too many wrong PINs. Use the master password.");
     }
     // counted BEFORE the try, so killing the app does not help
-    writeDoc(path_, saltText, blobText, static_cast<int>(left - 1));
+    Doc counted = d;
+    counted.left = d.left - 1;
+    writeDoc(path_, counted);
     Bytes result;
     bool ok = false;
-    try {
-        checkPinFormat(pin);
-        Bytes entropy = entropyFor(pin, salt);
+    {
+        Bytes entropy = entropyFor(pin, salt, d.n);
         ok = unprotect(blob, entropy, result);
         secureZero(entropy.data(), entropy.size());
-    } catch (const PinError&) {
-        ok = false;
     }
     if (!ok) {
-        if (left - 1 <= 0) {
+        if (d.left - 1 <= 0) {
             disable();
             throw PinDisabled("Too many wrong PINs. Use the master password.");
         }
-        throw WrongPin(static_cast<int>(left - 1));
+        throw WrongPin(static_cast<int>(d.left - 1));
     }
-    writeDoc(path_, saltText, blobText, kPinMaxAttempts);
     Secret secret{std::string_view(reinterpret_cast<const char*>(result.data()), result.size())};
     secureZero(result.data(), result.size());
+    d.left = kPinMaxAttempts;   // a correct PIN gives the attempts back
+    try {
+        writeDoc(path_, d);
+    } catch (const std::exception&) {
+    }
     return secret;
 }
 

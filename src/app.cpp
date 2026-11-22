@@ -4,6 +4,7 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <windowsx.h>
+#include <wtsapi32.h>
 
 #include <algorithm>
 #include <cmath>
@@ -19,6 +20,7 @@
 #include "pinlock.h"
 #include "settings.h"
 #include "twofas.h"
+#include "unlockguard.h"
 #include "ui.h"
 #include "vault.h"
 #include "version.h"
@@ -30,20 +32,20 @@ using namespace ui;
 
 namespace {
 
-constexpr uint64_t kAutoLockMs = 5 * 60 * 1000;
+constexpr uint64_t kAutoLockMs = 2 * 60 * 1000;   // an office workstation: two minutes without real input
 constexpr UINT kClipboardClearMs = 30 * 1000;
 const wchar_t kMainClass[] = L"B2FAMain";
 const wchar_t kListClass[] = L"B2FAList";
 
 enum : int {
-    ID_PW1 = 1001, ID_PW2, ID_UNLOCK, ID_USE_MASTER,
+    ID_PW1 = 1001, ID_PW2, ID_UNLOCK, ID_USE_MASTER, ID_BIND,
     ID_SEARCH = 1201, ID_ADD, ID_IMPORT, ID_EXPORT, ID_MORE,
     ID_PAD = 1400,
     CMD_OPEN_BACKUPS = 2001, CMD_BACKUP_NOW, CMD_CHANGE_PW, CMD_SET_PIN, CMD_REMOVE_PIN, CMD_SECURE_KEYPAD, CMD_BLOCK_CAPTURE,
     CMD_ABOUT, CMD_LOCK,
     CMD_ROW_COPY = 2101, CMD_ROW_EDIT, CMD_ROW_DELETE,
 };
-enum : UINT_PTR { TIMER_TICK = 1, TIMER_CLIPBOARD = 2 };
+enum : UINT_PTR { TIMER_TICK = 1, TIMER_CLIPBOARD = 2, TIMER_STATUS = 3 };
 
 std::wstring wide(const std::string& s) { return widen(s); }
 
@@ -75,6 +77,7 @@ private:
     Vault vault_;
     PinStore pins_;
     Settings settings_;
+    UnlockGuard unlockGuard_;
     IconStore icons_;
     std::unique_ptr<CaptureGuard> guard_;
     Surface surface_;
@@ -86,7 +89,10 @@ private:
     std::wstring unlockMsg_, status_;
     bool statusRed_ = false;
     int unlockMsgIndex_ = -1, statusIndex_ = -1;
-    std::string clipText_, menuRow_;
+    int waitShown_ = 0;               // seconds of waiting last shown on the unlock screen (0: none)
+    bool bindNew_ = true;            // the choice offered when a vault is created: bind it to this PC
+    bool offeredRecovery_ = false;   // the recovery export was offered during this unlock
+    std::string clipText_, menuRow_, shownBackupError_;
 
     std::vector<Row> rows_;
     int hover_ = -1, hoverNext_ = -1, scroll_ = 0;
@@ -105,7 +111,13 @@ private:
     void layoutUnlock(int w, int h);
     void layoutMain(int w, int h);
     void setUnlockMessage(const std::wstring& text);
+    bool unlockBlocked();                        // true (and says so) while the brake is on
+    void unlockFailed(const std::wstring& what);   // one more wrong try: message, and the brake
+    void updateUnlockWait();                     // the countdown on the unlock screen
     void setStatus(const std::wstring& text, bool red = false);
+    bool needsRecoveryExport() const;
+    void maybeOfferRecoveryExport();
+    std::pair<std::wstring, bool> statusToShow() const;
 
     // unlocking
     void doUnlock();
@@ -138,6 +150,10 @@ private:
     void changePassword();
     void openBackups();
     void moreMenu();
+    void menuCommand(int cmd);
+#ifdef B2FA_TEST_HOOKS
+    void snapshotForTests(bool repaintFirst);
+#endif
     void toggleSecureKeypad();
     void toggleCaptureBlock();
     void tick();
@@ -162,11 +178,13 @@ private:
 // ---- window setup ---------------------------------------------------------------------------------------------------
 int App::run(HINSTANCE instance, int show) {
     inst_ = instance;
+    unlockGuard_ = UnlockGuard({}, settings_.unlockFreeAttempts(), settings_.unlockDelaySeconds());
     setDpi(GetDpiForSystem());
     touchActivity();
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = &App::mainProc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -176,6 +194,7 @@ int App::run(HINSTANCE instance, int show) {
     RegisterClassExW(&wc);
     WNDCLASSEXW lc{};
     lc.cbSize = sizeof(lc);
+    lc.style = CS_HREDRAW | CS_VREDRAW;
     lc.lpfnWndProc = &App::listProc;
     lc.hInstance = instance;
     lc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -191,12 +210,21 @@ int App::run(HINSTANCE instance, int show) {
     guard_ = std::make_unique<CaptureGuard>(hwnd_);
     setModalHook([this](HWND dlg) { if (guard_) guard_->protect(dlg); });
     SetTimer(hwnd_, TIMER_TICK, 250, nullptr);
+    WTSRegisterSessionNotification(hwnd_, NOTIFY_FOR_THIS_SESSION);
     showUnlock();
     ShowWindow(hwnd_, show);
     UpdateWindow(hwnd_);
     // `--allow-capture` starts with the screen capture protection off, like More > Block screen capture does
     // for a session (used to take screenshots of the program)
-    if (!wcsstr(GetCommandLineW(), L"--allow-capture")) guard_->enable();   // needs the window to exist on screen
+    bool allowCapture = false;
+    {
+        int argc = 0;
+        LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        for (int i = 1; argv && i < argc; ++i) if (lstrcmpW(argv[i], L"--allow-capture") == 0) allowCapture = true;
+        if (argv) LocalFree(argv);
+    }
+    if (!allowCapture && CaptureGuard::supported() && !guard_->enable())   // needs the window to exist on screen
+        MessageBoxW(hwnd_, L"The screen capture protection could not be switched on for this window.", kAppName, MB_OK | MB_ICONWARNING);
     while (pump(hwnd_)) {
     }
     return 0;
@@ -272,57 +300,65 @@ LRESULT App::onMessage(UINT m, WPARAM w, LPARAM l) {
                 KillTimer(hwnd_, TIMER_CLIPBOARD);
                 wipeClipboard();
                 setStatus(L"");
+            } else if (w == TIMER_STATUS) {
+                KillTimer(hwnd_, TIMER_STATUS);
+                setStatus(L"");   // a passing message goes away; the recovery reminder, if any, takes its place
             }
             return 0;
         case WM_COMMAND: {
+            // Any program of this session can post a WM_COMMAND to this window, so nothing is done for one that
+            // does not fit the state of the window: a dialog open (the window is then disabled), the wrong view,
+            // a control that is not ours. The menus return their choice directly instead of posting it.
+            if (!IsWindowEnabled(hwnd_)) return 0;
             int id = LOWORD(w), code = HIWORD(w);
             HWND ctl = reinterpret_cast<HWND>(l);
             guarded([&] {
                 if (code == EN_SETFOCUS || code == EN_KILLFOCUS) {
+                    if (!ctl || !IsChild(hwnd_, ctl)) return;
                     surface_.invalidateField(hwnd_, ctl);
                     if (code == EN_SETFOCUS && pad_) pad_->onEditFocus(ctl);
                     return;
                 }
-                if (id == ID_SEARCH && code == EN_CHANGE) { rebuildRows(); return; }
-                if (id == IDOK && view_ == View::Unlock) { doUnlock(); return; }
+                bool unlockView = view_ == View::Unlock, mainView = view_ == View::Main && vault_.unlocked();
+                if (id == ID_SEARCH && code == EN_CHANGE) { if (mainView) rebuildRows(); return; }
+                if (id == IDOK && unlockView) { doUnlock(); return; }
                 if (code != BN_CLICKED) return;
-                if (pad_ && id >= ID_PAD && id < ID_PAD + SecureInput::kIdCount) { pad_->onCommand(id); return; }
+                if (unlockView && pad_ && id >= ID_PAD && id < ID_PAD + SecureInput::kIdCount) { pad_->onCommand(id); return; }
                 switch (id) {
-                    case ID_UNLOCK: doUnlock(); break;
-                    case ID_USE_MASTER: pinMode_ = false; showUnlock(); break;
-                    case ID_ADD: addAccount(); break;
-                    case ID_IMPORT: importBackup(); break;
-                    case ID_EXPORT: exportBackup(); break;
-                    case ID_MORE: moreMenu(); break;
-                    // menu commands (the menus post WM_COMMAND, so they can also be driven from outside)
-                    case CMD_OPEN_BACKUPS: openBackups(); break;
-                    case CMD_BACKUP_NOW: backupNow(); break;
-                    case CMD_CHANGE_PW: changePassword(); break;
-                    case CMD_SET_PIN: setupPin(); break;
-                    case CMD_REMOVE_PIN: removePin(); break;
-                    case CMD_SECURE_KEYPAD: toggleSecureKeypad(); break;
-                    case CMD_BLOCK_CAPTURE: toggleCaptureBlock(); break;
-                    case CMD_ABOUT: showAbout(hwnd_); break;
-                    case CMD_LOCK: lock(); break;
-                    case CMD_ROW_COPY: case CMD_ROW_EDIT: case CMD_ROW_DELETE: {
-                        int row = -1;
-                        for (size_t i = 0; i < rows_.size(); ++i) if (rows_[i].id == menuRow_) row = static_cast<int>(i);
-                        if (row < 0) break;
-                        if (id == CMD_ROW_COPY) copyCode(row);
-                        else if (id == CMD_ROW_EDIT) editAccount(menuRow_);
-                        else deleteAccount(menuRow_);
-                        break;
-                    }
+                    case ID_UNLOCK: if (unlockView) doUnlock(); break;
+                    case ID_USE_MASTER: if (unlockView) { pinMode_ = false; showUnlock(); } break;
+                    case ID_BIND: if (unlockView && creating_) { bindNew_ = !bindNew_; layout(); } break;
+                    case ID_ADD: if (mainView) addAccount(); break;
+                    case ID_IMPORT: if (mainView) importBackup(); break;
+                    case ID_EXPORT: if (mainView) exportBackup(); break;
+                    case ID_MORE: if (mainView) moreMenu(); break;
+#ifdef B2FA_TEST_HOOKS
+                    // test builds only: the menu commands can be sent as WM_COMMAND so scripted tests can drive them.
+                    // The release build never compiles this.
+                    default: if (mainView) menuCommand(id); break;
+#endif
                 }
             });
             return 0;
         }
+#ifdef B2FA_TEST_HOOKS
+        case WM_APP + 7:   // test builds only: save the client area as a BMP in $B2FA_TEST_SNAPSHOT_DIR (wParam 1: after a full repaint)
+            snapshotForTests(w == 1);
+            return 0;
+#endif
+        case WM_WTSSESSION_CHANGE:
+            if (w == WTS_SESSION_LOCK && vault_.unlocked()) lock();   // Windows locked: so does the vault
+            return 0;
+        case WM_POWERBROADCAST:
+            if (w == PBT_APMSUSPEND && vault_.unlocked()) lock();     // sleeping: lock before
+            return TRUE;
         case WM_CLOSE:
             wipeClipboard();
             if (vault_.unlocked()) vault_.lock();
             DestroyWindow(hwnd_);
             return 0;
         case WM_DESTROY:
+            WTSUnRegisterSessionNotification(hwnd_);
             KillTimer(hwnd_, TIMER_TICK);
             guard_.reset();
             PostQuitMessage(0);
@@ -360,6 +396,7 @@ void App::showUnlock() {
         viewControls_.push_back(pw2_);
         edits.push_back(pw2_);
     }
+    if (creating_) viewControls_.push_back(makeButton(hwnd_, ID_BIND, L"", BtnStyle::Link));
     pad_ = std::make_unique<SecureInput>(hwnd_, edits, pinScreen_, pinScreen_ && settings_.secureKeypad(), ID_PAD);
     pad_->onLayoutChanged = [this] { layout(); };
     HWND unlock = makeButton(hwnd_, ID_UNLOCK, creating_ ? L"Create vault" : L"Unlock", BtnStyle::Primary);
@@ -368,6 +405,7 @@ void App::showUnlock() {
     // the keypad owns its own buttons; they are destroyed with it
     layout();
     SetFocus(pw1_);
+    if (!creating_) unlockBlocked();   // a wait that is still running (the program may have been closed and reopened)
 }
 
 void App::showMain() {
@@ -391,7 +429,8 @@ void App::layout() {
     if (rc.right <= 0 || rc.bottom <= 0) return;
     if (view_ == View::Unlock) layoutUnlock(rc.right, rc.bottom);
     else layoutMain(rc.right, rc.bottom);
-    InvalidateRect(hwnd_, nullptr, FALSE);
+    // everything is drawn again, children included: moved buttons and fields must not keep old pixels
+    RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
 }
 
 void App::layoutUnlock(int W, int H) {
@@ -401,8 +440,8 @@ void App::layoutUnlock(int W, int H) {
     y = surface_.addLabel(kAppName, Role::Title, kFg, 0, y, W, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
     y = surface_.addLabel(L"Your 2FAS codes, on this PC", Role::Body, kDim, 0, y, W, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX) + dp(20);
     if (creating_) {
-        wchar_t text[256];
-        swprintf_s(text, L"Choose a master password (%d characters minimum,\na passphrase works well). It cannot be recovered.\nKeep your phone backup too.",
+        wchar_t text[512];
+        swprintf_s(text, L"Choose a master password (%d characters minimum: a passphrase of 4 or 5 random words works well).\nIt cannot be recovered. Keep your phone backup too.",
                    static_cast<int>(kMinMasterChars));
         y = surface_.addLabel(text, Role::Body, kDim, x - dp(40), y, colW + dp(80), DT_CENTER | DT_WORDBREAK | DT_NOPREFIX) + dp(12);
     }
@@ -414,6 +453,14 @@ void App::layoutUnlock(int W, int H) {
         surface_.placeField(pw2_, fx, y, fw);
         y += Surface::fieldHeight() + dp(4);
         y = surface_.addLabel(L"Repeat the password", Role::Body, kDim, 0, y, W, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX) + dp(6);
+        if (HWND bind = GetDlgItem(hwnd_, ID_BIND)) {
+            setButtonText(bind, bindNew_ ? L"Bind to this PC: ON (recommended)" : L"Bind to this PC: OFF");
+            SetWindowPos(bind, nullptr, x, y, colW, dp(24), SWP_NOZORDER | SWP_NOACTIVATE);
+            y += dp(26);
+            y = surface_.addLabel(bindNew_ ? L"The vault only opens on this PC and this Windows account, even with the password."
+                                          : L"The vault can be restored on any PC with its password. A stolen copy is easier to attack.",
+                                  Role::Small, kDim, x - dp(40), y, colW + dp(80), DT_CENTER | DT_WORDBREAK | DT_NOPREFIX) + dp(8);
+        }
     }
     y += pad_->layout(x, y, colW) + dp(4);
     unlockMsgIndex_ = static_cast<int>(surface_.labels.size());
@@ -444,38 +491,110 @@ void App::layoutMain(int W, int H) {
     int statusH = dp(28);
     SetWindowPos(list_, nullptr, pad, top + bh + dp(12), W - 2 * pad, std::max(10, H - (top + bh + dp(12)) - statusH), SWP_NOZORDER | SWP_NOACTIVATE);
     statusIndex_ = static_cast<int>(surface_.labels.size());
-    surface_.addLabel(status_.empty() ? L" " : status_, Role::Body, statusRed_ ? kRed : kDim, pad, H - statusH + dp(5), W - 2 * pad,
+    auto shown = statusToShow();
+    surface_.addLabel(shown.first.empty() ? L" " : shown.first, Role::Body, shown.second ? kRed : kDim, pad, H - statusH + dp(5), W - 2 * pad,
                       DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-    surface_.labels.back().text = status_;
+    surface_.labels.back().text = shown.first;
     updateScroll();
 }
 
 void App::setUnlockMessage(const std::wstring& text) {
     unlockMsg_ = text;
-    if (view_ == View::Unlock && unlockMsgIndex_ >= 0) {
-        surface_.labels[static_cast<size_t>(unlockMsgIndex_)].text = text;
-        RECT r = surface_.labels[static_cast<size_t>(unlockMsgIndex_)].box;
-        InvalidateRect(hwnd_, &r, FALSE);
+    if (view_ == View::Unlock) {
+        layout();   // measures the new text: a long message takes as many lines as it needs
         UpdateWindow(hwnd_);
     }
+}
+
+bool App::unlockBlocked() {
+    int wait = unlockGuard_.waitSeconds();
+    if (wait <= 0) return false;
+    waitShown_ = wait;
+    setUnlockMessage(L"Too many wrong tries. Wait " + std::to_wstring(wait) + L" s before the next try.");
+    return true;
+}
+
+void App::unlockFailed(const std::wstring& what) {
+    unlockGuard_.failure();
+    wipeEdit(pw1_);
+    int wait = unlockGuard_.waitSeconds();
+    if (wait > 0) {
+        waitShown_ = wait;
+        setUnlockMessage(what + L" Wait " + std::to_wstring(wait) + L" s before the next try.");
+    } else {
+        waitShown_ = 0;
+        int left = unlockGuard_.triesBeforeWait();
+        setUnlockMessage(what + L" " + std::to_wstring(left) + (left == 1 ? L" try" : L" tries") + L" left before a " +
+                         std::to_wstring(unlockGuard_.delaySeconds()) + L" s wait.");
+    }
+}
+
+void App::updateUnlockWait() {
+    if (waitShown_ <= 0 || view_ != View::Unlock) return;
+    int wait = unlockGuard_.waitSeconds();
+    if (wait == waitShown_) return;
+    waitShown_ = wait;
+    // a short one-line text in the place of the message: no new layout once a second
+    std::wstring text = wait > 0 ? L"Too many wrong tries. Wait " + std::to_wstring(wait) + L" s before the next try." : L"You can try again.";
+    unlockMsg_ = text;
+    if (unlockMsgIndex_ >= 0 && unlockMsgIndex_ < static_cast<int>(surface_.labels.size())) {
+        Label& l = surface_.labels[static_cast<size_t>(unlockMsgIndex_)];
+        l.text = text;
+        RECT r = l.box;
+        InvalidateRect(hwnd_, &r, FALSE);
+    } else {
+        layout();
+    }
+}
+
+bool App::needsRecoveryExport() const {
+    return vault_.unlocked() && vault_.bound() && !vault_.services.empty() && settings_.recoveryExportedFor() != vault_.deviceId();
+}
+
+std::pair<std::wstring, bool> App::statusToShow() const {
+    if (!status_.empty()) return {status_, statusRed_};
+    if (needsRecoveryExport()) return {L"This vault only opens on this PC. Make a recovery backup: Export.", true};
+    return {L"", false};
 }
 
 void App::setStatus(const std::wstring& text, bool red) {
     status_ = text;
     statusRed_ = red;
+    if (hwnd_) {
+        if (text.empty()) KillTimer(hwnd_, TIMER_STATUS);
+        else SetTimer(hwnd_, TIMER_STATUS, 6000, nullptr);
+    }
     if (view_ == View::Main && statusIndex_ >= 0 && statusIndex_ < static_cast<int>(surface_.labels.size())) {
+        auto shown = statusToShow();
         Label& l = surface_.labels[static_cast<size_t>(statusIndex_)];
-        l.text = text;
-        l.color = red ? kRed : kDim;
+        l.text = shown.first;
+        l.color = shown.second ? kRed : kDim;
         RECT r = l.box;
         InvalidateRect(hwnd_, &r, FALSE);
     }
 }
 
+void App::maybeOfferRecoveryExport() {
+    if (offeredRecovery_ || !needsRecoveryExport()) return;
+    offeredRecovery_ = true;   // once per unlock: a reminder, not a nag (the red line stays until it is done)
+    int answer = MessageBoxW(hwnd_,
+                             L"This vault only opens on this PC and this Windows account.\n\nMake a recovery backup now? It opens anywhere with its own "
+                             L"password, so you can restore your accounts if this PC or your Windows profile is lost. Keep it off this PC (a USB key, a safe place).",
+                             kAppName, MB_YESNO | MB_ICONQUESTION);
+    if (answer == IDYES) exportBackup();
+}
+
 // ---- unlocking ---------------------------------------------------------------------------------------------------------
 void App::doUnlock() {
     Secret pw = readSecret(pw1_);
-    if (pinScreen_) return unlockWithPin(pw);
+    if (pinScreen_) {
+        if (pw.empty()) return;   // Enter on an empty field does nothing
+        return unlockWithPin(pw);
+    }
+    if (vault_.exists()) {
+        if (pw.empty()) return;        // Enter on an empty field does nothing, and costs no try
+        if (unlockBlocked()) return;   // the brake: no try, no key derivation
+    }
     bool created = false;
     HCURSOR old = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
     try {
@@ -485,7 +604,7 @@ void App::doUnlock() {
                 return setUnlockMessage(L"The two passwords differ");
             }
             setUnlockMessage(L"Creating...");
-            vault_.create(pw);
+            vault_.create(pw, bindNew_);
             created = true;
         } else {
             setUnlockMessage(L"Checking...");
@@ -493,21 +612,35 @@ void App::doUnlock() {
         }
     } catch (const WrongMasterPassword&) {
         SetCursor(old);
-        setUnlockMessage(L"Wrong master password");
-        wipeEdit(pw1_);
+        unlockFailed(L"Wrong master password.");
         return;
     } catch (const std::exception& e) {
         SetCursor(old);
         return setUnlockMessage(wide(e.what()));
     }
     SetCursor(old);
+    unlockGuard_.success();
+    waitShown_ = 0;
     unlockMsg_.clear();
     pinMode_ = true;
     showMain();
+    if (created && !vault_.keptCopiesDir().empty()) {
+        std::wstring text = L"Backups of an earlier vault were found. They were kept, untouched, in:\n\n" + vault_.keptCopiesDir().wstring() +
+                            L"\n\nThey can only be opened with the master password of that earlier vault.";
+        MessageBoxW(hwnd_, text.c_str(), kAppName, MB_OK | MB_ICONINFORMATION);
+    }
+    if (created && vault_.bound()) {
+        MessageBoxW(hwnd_,
+                    L"This vault is bound to this PC and this Windows account.\n\nIt cannot be opened anywhere else, not even with the master password, "
+                    L"and not if your Windows profile is lost or its local password is reset.\n\nKeep your phone backup, and make a recovery backup (Export) once "
+                    L"your accounts are in: it opens anywhere with its own password.",
+                    kAppName, MB_OK | MB_ICONWARNING);
+    }
     if (created) guarded([&] { offerPin(); });   // offered right after the account screen is up
 }
 
 void App::unlockWithPin(const Secret& pin) {
+    if (unlockBlocked()) return;   // the brake
     HCURSOR old = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
     setUnlockMessage(L"Checking...");
     try {
@@ -515,8 +648,7 @@ void App::unlockWithPin(const Secret& pin) {
         vault_.unlock(master);
     } catch (const WrongPin& e) {
         SetCursor(old);
-        setUnlockMessage(wide(e.what()));
-        wipeEdit(pw1_);
+        unlockFailed(wide(e.what()));
         return;
     } catch (const PinDisabled& e) {
         SetCursor(old);
@@ -534,6 +666,8 @@ void App::unlockWithPin(const Secret& pin) {
         return setUnlockMessage(wide(e.what()));
     }
     SetCursor(old);
+    unlockGuard_.success();
+    waitShown_ = 0;
     unlockMsg_.clear();
     showMain();
 }
@@ -545,17 +679,22 @@ void App::offerPin() {
 
 void App::setupPin() {
     Secret pin;
-    wchar_t prompt[512];
+    wchar_t prompt[1024];
     swprintf_s(prompt,
-               L"Choose a PIN (%d to %d digits) to unlock on this PC.\n\nA short PIN is weak by nature. It only works with this Windows account, and is "
-               L"erased after %d wrong tries. Your master password stays the real key.",
+               L"Choose a PIN (%d to %d digits) to unlock on this PC.\n\nA PIN is a convenience, not a lock: a program running as you could try PINs "
+               L"offline, and only the length of the PIN and a slow key derivation (about a second here) hold it back. 6 digits take such a program days "
+               L"on one core, 8 or more digits years. It works with this Windows account only, and is erased after %d wrong tries typed here. "
+               L"Your master password stays the real key.",
                static_cast<int>(kPinMin), static_cast<int>(kPinMax), kPinMaxAttempts);
     if (!askPassword(hwnd_, L"PIN", prompt, pin, true, kPinMin, true, settings_.secureKeypad())) return;
+    HCURSOR old = SetCursor(LoadCursorW(nullptr, IDC_WAIT));   // the key derivation takes a moment
     try {
         pins_.enable(pin, vault_.masterPassword());
     } catch (const std::exception& e) {
+        SetCursor(old);
         return fail(e);
     }
+    SetCursor(old);
     setStatus(L"PIN set. It unlocks B-2FA on this PC only.");
 }
 
@@ -565,6 +704,7 @@ void App::removePin() {
 }
 
 void App::lock() {
+    offeredRecovery_ = false;
     Modal::closeAll();   // an open dialog may show a secret
     vault_.lock();
     wipeClipboard();
@@ -599,6 +739,7 @@ void App::rebuildRows() {
     refreshRows();
     updateScroll();
     InvalidateRect(list_, nullptr, FALSE);
+    setStatus(status_, statusRed_);   // the recovery reminder depends on whether there are accounts
 }
 
 void App::refreshRows() {
@@ -771,7 +912,10 @@ LRESULT App::onListMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
         case WM_PAINT: paintList(h); return 0;
         case WM_ERASEBKGND: return 1;
-        case WM_SIZE: updateScroll(); return 0;
+        case WM_SIZE:
+            updateScroll();
+            InvalidateRect(h, nullptr, FALSE);   // the list is drawn from its width: all of it
+            return 0;
         case WM_MOUSEWHEEL: {
             int delta = GET_WHEEL_DELTA_WPARAM(w);
             scroll_ -= delta * rowHeight() / 120 * 2 / 2;
@@ -826,15 +970,25 @@ LRESULT App::onListMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (hover_ >= 0) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; }
             break;
         case WM_LBUTTONDOWN: {
+            if (!IsWindowEnabled(hwnd_) || !vault_.unlocked()) return 0;
             int row = rowAt(GET_Y_LPARAM(l));
             if (row < 0) return 0;
+            bool onNext = false;
+            if (rows_[static_cast<size_t>(row)].hotp) {
+                RECT rc;
+                GetClientRect(h, &rc);
+                RECT nb = nextButtonRect(row, rc.right);
+                POINT click{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+                onNext = PtInRect(&nb, click) != 0;
+            }
             guarded([&] {
-                if (hoverNext_ == row) nextHotp(row);
+                if (onNext) nextHotp(row);
                 else copyCode(row);
             });
             return 0;
         }
         case WM_RBUTTONUP: {
+            if (!IsWindowEnabled(hwnd_) || !vault_.unlocked()) return 0;
             int row = rowAt(GET_Y_LPARAM(l));
             if (row < 0) return 0;
             POINT p{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
@@ -874,8 +1028,32 @@ void App::rowMenu(int row, POINT screen) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, CMD_ROW_DELETE, L"Delete...");
     menuRow_ = rows_[static_cast<size_t>(row)].id;
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, screen.x, screen.y, 0, hwnd_, nullptr);   // the choice arrives as WM_COMMAND
+    int cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, screen.x, screen.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
+    if (cmd) menuCommand(cmd);
+}
+
+void App::menuCommand(int cmd) {
+    switch (cmd) {
+        case CMD_OPEN_BACKUPS: openBackups(); break;
+        case CMD_BACKUP_NOW: backupNow(); break;
+        case CMD_CHANGE_PW: changePassword(); break;
+        case CMD_SET_PIN: setupPin(); break;
+        case CMD_REMOVE_PIN: removePin(); break;
+        case CMD_SECURE_KEYPAD: toggleSecureKeypad(); break;
+        case CMD_BLOCK_CAPTURE: toggleCaptureBlock(); break;
+        case CMD_ABOUT: showAbout(hwnd_); break;
+        case CMD_LOCK: lock(); break;
+        case CMD_ROW_COPY: case CMD_ROW_EDIT: case CMD_ROW_DELETE: {
+            int row = -1;
+            for (size_t i = 0; i < rows_.size(); ++i) if (rows_[i].id == menuRow_) row = static_cast<int>(i);
+            if (row < 0) break;
+            if (cmd == CMD_ROW_COPY) copyCode(row);
+            else if (cmd == CMD_ROW_EDIT) editAccount(menuRow_);
+            else deleteAccount(menuRow_);
+            break;
+        }
+    }
 }
 
 // ---- actions ----------------------------------------------------------------------------------------------------------------------
@@ -906,6 +1084,7 @@ void App::addAccount() {
     }
     rebuildRows();
     setStatus(L"Added");
+    maybeOfferRecoveryExport();
 }
 
 void App::editAccount(const std::string& id) {
@@ -916,8 +1095,12 @@ void App::editAccount(const std::string& id) {
     try {
         vault_.update(edited);
     } catch (const std::exception& e) {
+        copy.wipe();
+        edited.wipe();
         return fail(e);
     }
+    copy.wipe();
+    edited.wipe();
     rebuildRows();
 }
 
@@ -945,7 +1128,7 @@ bool App::openFileDialog(std::wstring& path, const wchar_t* title, const wchar_t
     ofn.lpstrFile = buf;
     ofn.nMaxFile = static_cast<DWORD>(std::size(buf));
     ofn.lpstrTitle = title;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
     if (!GetOpenFileNameW(&ofn)) return false;
     path = buf;
     return true;
@@ -962,7 +1145,7 @@ bool App::saveFileDialog(std::wstring& path, const wchar_t* title, const wchar_t
     ofn.nMaxFile = static_cast<DWORD>(std::size(buf));
     ofn.lpstrTitle = title;
     ofn.lpstrDefExt = defExt;
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
     if (!GetSaveFileNameW(&ofn)) return false;
     path = buf;
     return true;
@@ -971,13 +1154,15 @@ bool App::saveFileDialog(std::wstring& path, const wchar_t* title, const wchar_t
 void App::importBackup() {
     std::wstring path;
     if (!openFileDialog(path, L"Import a 2FAS backup", L"2FAS backup (*.2fas;*.json)\0*.2fas;*.json\0All files\0*.*\0\0")) return;
+    if (!vault_.unlocked()) return;   // the vault locked itself while the file dialog was open
     Json content;
     try {
         content = twofas::readBackup(path);
         if (twofas::isEncrypted(content)) {
             while (true) {
                 Secret pw;
-                if (!askPassword(hwnd_, L"Encrypted backup", L"Password of this backup (the one you set in 2FAS):", pw)) return;
+                if (!askPassword(hwnd_, L"Encrypted backup", L"Password of this backup (the one you set in 2FAS):", pw)) { content.wipe(); return; }
+                if (!vault_.unlocked()) { content.wipe(); return; }
                 try {
                     content = twofas::decryptBackup(content, pw);
                     break;
@@ -989,9 +1174,11 @@ void App::importBackup() {
             content = twofas::decryptBackup(content, Secret());
         }
         auto [added, skipped] = vault_.merge(content);
+        content.wipe();
         rebuildRows();
         std::wstring msg = std::to_wstring(added) + L" account(s) added, " + std::to_wstring(skipped) + L" already here or skipped.";
         MessageBoxW(hwnd_, msg.c_str(), kAppName, MB_OK | MB_ICONINFORMATION);
+        if (added > 0) maybeOfferRecoveryExport();
     } catch (const std::exception& e) {
         fail(e);
     }
@@ -1009,13 +1196,16 @@ void App::exportBackup() {
                L"the vault does, so choose a long passphrase.",
                static_cast<int>(kMinExportChars));
     if (!askPassword(hwnd_, L"Export a 2FAS backup", prompt, pw, true, kMinExportChars)) return;
+    if (!vault_.unlocked()) return;
     std::wstring path;
     if (!saveFileDialog(path, L"Export a 2FAS backup", L"2FAS backup (*.2fas)\0*.2fas\0\0", L"2fas", wide("B-2FA-export-" + todayStamp() + ".2fas"))) return;
+    if (!vault_.unlocked()) return;   // locked while the Save dialog was open: nothing may be written
     try {
         vault_.exportBackup(path, pw);
     } catch (const std::exception& e) {
         return fail(e);
     }
+    if (vault_.bound()) settings_.setRecoveryExportedFor(vault_.deviceId());   // this vault now has its way back
     setStatus(L"Exported " + std::filesystem::path(path).filename().wstring());
 }
 
@@ -1072,9 +1262,10 @@ void App::toggleCaptureBlock() {
     if (guard_->enabled()) {
         guard_->disable();
         setStatus(L"Screen capture is allowed until you restart B-2FA.");
-    } else {
-        guard_->enable();
+    } else if (guard_->enable()) {
         setStatus(L"Screen capture is blocked.");
+    } else {
+        setStatus(L"The screen capture protection could not be switched on.", true);
     }
 }
 
@@ -1089,23 +1280,72 @@ void App::moreMenu() {
     if (CaptureGuard::supported())
         AppendMenuW(menu, MF_STRING | ((guard_ && guard_->enabled()) ? MF_CHECKED : 0), CMD_BLOCK_CAPTURE, L"Block screen capture");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    if (vault_.bound()) AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"Vault bound to this PC");
     AppendMenuW(menu, MF_STRING, CMD_ABOUT, L"About B-2FA");
     AppendMenuW(menu, MF_STRING, CMD_LOCK, L"Lock");
     HWND button = GetDlgItem(hwnd_, ID_MORE);
     RECT r;
     GetWindowRect(button, &r);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RIGHTALIGN, r.right, r.bottom, 0, hwnd_, nullptr);   // WM_COMMAND follows
+    int cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RIGHTALIGN | TPM_RETURNCMD, r.right, r.bottom, 0, hwnd_, nullptr);
     DestroyMenu(menu);
+    if (cmd) guarded([&] { menuCommand(cmd); });
 }
 
+#ifdef B2FA_TEST_HOOKS
+void App::snapshotForTests(bool repaintFirst) {
+    wchar_t dir[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"B2FA_TEST_SNAPSHOT_DIR", dir, MAX_PATH)) return;
+    if (repaintFirst) RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    int w = rc.right, h = rc.bottom;
+    HDC dc = GetDC(hwnd_);
+    HDC mem = CreateCompatibleDC(dc);
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HGDIOBJ old = SelectObject(mem, bmp);
+    BitBlt(mem, 0, 0, w, h, dc, 0, 0, SRCCOPY);   // what the window's own surface holds right now
+    BITMAPFILEHEADER fh{};
+    fh.bfType = 0x4D42;
+    fh.bfOffBits = sizeof(fh) + sizeof(bi.bmiHeader);
+    fh.bfSize = fh.bfOffBits + static_cast<DWORD>(w) * h * 4;
+    std::string file(reinterpret_cast<const char*>(&fh), sizeof(fh));
+    file.append(reinterpret_cast<const char*>(&bi.bmiHeader), sizeof(bi.bmiHeader));
+    file.append(static_cast<const char*>(bits), static_cast<size_t>(w) * h * 4);
+    std::filesystem::path out = std::filesystem::path(dir) / (repaintFirst ? L"fresh.bmp" : L"actual.bmp");
+    try { writeFileSynced(out, file); } catch (const std::exception&) {}
+    SelectObject(mem, old);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+    ReleaseDC(hwnd_, dc);
+}
+#endif
+
 void App::tick() {
-    if (!vault_.unlocked()) return;
+    if (!vault_.unlocked()) {
+        updateUnlockWait();
+        return;
+    }
     if (GetTickCount64() - lastActivity() > kAutoLockMs) {
         lock();
         return;
     }
     if (view_ == View::Main) refreshRows();
     vault_.flushBackup();
+    const std::string& err = vault_.lastBackupError();
+    if (!err.empty() && err != shownBackupError_ && view_ == View::Main) {
+        shownBackupError_ = err;
+        setStatus(wide(err), true);
+    } else if (err.empty()) {
+        shownBackupError_.clear();
+    }
 }
 
 // ---- clipboard ---------------------------------------------------------------------------------------------------------------------
@@ -1123,10 +1363,17 @@ void App::wipeClipboard() {
     // empty the clipboard, but only if it still holds the code we put there
     if (clipText_.empty()) return;
     std::string current;
-    if (clip::getText(current) && current == clipText_) clip::clear();
-    secureZero(clipText_.data(), clipText_.size());
-    clipText_.clear();
+    int state = clip::getText(current);
+    bool done = true;
+    if (state < 0) done = false;                                        // busy: try again in a moment
+    else if (state == 1 && current == clipText_) done = clip::clear();  // still our code: clear it
     secureZero(current.data(), current.size());
+    if (done) {
+        secureZero(clipText_.data(), clipText_.size());
+        clipText_.clear();
+    } else if (hwnd_ && IsWindow(hwnd_)) {
+        SetTimer(hwnd_, TIMER_CLIPBOARD, 2000, nullptr);
+    }
 }
 
 }  // namespace
