@@ -37,7 +37,7 @@ not at hand, and it can export a backup that the 2FAS phone app imports back.
 - **On-screen shuffled keypad** on demand for the PIN and the passwords, against keyloggers (see below).
 - Optional PIN (6 to 10 digits) for quick unlock on this PC (a convenience, not a lock: see [Security](#security)).
 - Automatic backups of the vault, locking after 2 minutes without input (and when Windows locks or sleeps), and screen capture protection.
-- Service logos from the official 2FAS pack, installed on demand (see [Logos](#logos)).
+- Service logos from the official 2FAS pack, included in the installer and the portable zip (see [Logos](#logos)).
 - No network access: the program never connects to the internet.
 - One static executable: no Python, no .NET, no Visual C++ runtime, no DLL to ship.
 
@@ -181,19 +181,20 @@ Everything lives in `%APPDATA%\BSM\B-2FA` (override with the `B2FA_HOME` environ
 - `backups\`: the last 10 automatic copies of the vault. To restore one, copy it over `vault.b2fa`.
 - `pin.b2fa`: the PIN side file, if you set a PIN.
 - `settings.json`: the few settings (nothing secret), and the public id of the vault that was exported.
-- `icons\`: the logo pack, if you installed it.
+- `icons\`: a logo pack of your own, if you put one here (it is used before the one that comes with the program).
 
 Install, update and uninstall never touch this folder. The master password cannot be recovered.
 
 ## Logos
 
-The service logos belong to 2FAS and are **not** under the GPL (their repository says so), so they are not
-part of this project. To show them on your own PC, run once (needs `git`, about 13 MB):
+The installer and the portable zip bring the 2FAS logo pack in an `icons` folder next to `B-2FA.exe` (about
+13 MB). Without a pack, B-2FA shows a letter tile. To build with logos, run once (needs `git`, about 13 MB):
 
     powershell -ExecutionPolicy Bypass -File tools\fetch_icons.ps1
 
-It downloads the logo pack from a pinned commit of the 2FAS Android repository into `%APPDATA%\BSM\B-2FA\icons`. Keep it
-for your own use and do not redistribute it. Without the pack, B-2FA shows a letter tile.
+It downloads the pack from a pinned commit of the 2FAS Android repository into `%APPDATA%\BSM\B-2FA\icons`;
+`tools\build.ps1` takes it from there. The pack is not part of this repository (the 2FAS graphics are not under
+the GPL); a pack in `%APPDATA%\BSM\B-2FA\icons` is used before the one next to the program.
 
 ## Build
 

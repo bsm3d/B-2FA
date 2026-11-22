@@ -42,4 +42,11 @@ fs::path backupsDir() {
 
 fs::path iconsDir() { return dataDir() / L"icons"; }
 
+fs::path installedIconsDir() {
+    wchar_t buf[MAX_PATH * 2];
+    DWORD n = GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
+    if (n == 0 || n >= std::size(buf)) return {};
+    return fs::path(buf).parent_path() / L"icons";
+}
+
 }  // namespace b2::paths

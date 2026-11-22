@@ -7,8 +7,7 @@
   services.json) into a throw-away temporary folder, then copies services.json and the PNGs to
   %APPDATA%\BSM\B-2FA\icons (or $env:B2FA_HOME\icons). B-2FA itself never uses the network.
 
-  The 2FAS README says their graphics are not under the GPL and have their own terms: keep this
-  pack for your own use and do not ship it with B-2FA.
+  tools\build.ps1 takes the pack from there to put it in the installer and in the portable zip.
 
 .PARAMETER Source
   A folder that already holds services.json and icons\ (no download).

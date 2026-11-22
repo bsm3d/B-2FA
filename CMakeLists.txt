@@ -34,7 +34,7 @@ set_target_properties(B-2FA PROPERTIES OUTPUT_NAME "B-2FA")
 
 # ---- tests ----------------------------------------------------------------------------
 enable_testing()
-add_executable(b2tests tests/test_main.cpp)
-target_link_libraries(b2tests PRIVATE b2core)
+add_executable(b2tests tests/test_main.cpp src/icons.cpp)
+target_link_libraries(b2tests PRIVATE b2core gdi32 windowscodecs uuid)
 target_compile_definitions(b2tests PRIVATE VECTORS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors")
 add_test(NAME core COMMAND b2tests)

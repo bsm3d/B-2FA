@@ -26,7 +26,17 @@ bool looksLikeUuid(const std::string& s) {
 
 }  // namespace
 
-IconStore::IconStore(std::filesystem::path folder) : folder_(folder.empty() ? paths::iconsDir() : std::move(folder)) {}
+IconStore::IconStore(std::filesystem::path folder) {
+    if (!folder.empty()) {
+        folder_ = std::move(folder);
+        return;
+    }
+    folder_ = paths::iconsDir();   // a pack the user put in the data folder wins
+    if (!fileExists(folder_ / L"services.json")) {
+        std::filesystem::path installed = paths::installedIconsDir();
+        if (!installed.empty() && fileExists(installed / L"services.json")) folder_ = std::move(installed);
+    }
+}
 
 IconStore::~IconStore() { clearImages(); }
 

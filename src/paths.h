@@ -10,6 +10,7 @@ namespace b2::paths {
 std::filesystem::path dataDir();      // created if missing
 std::filesystem::path vaultPath();
 std::filesystem::path backupsDir();   // created if missing
-std::filesystem::path iconsDir();     // not created: the logo pack is optional
+std::filesystem::path iconsDir();     // not created: a pack the user put in the data folder (it wins)
+std::filesystem::path installedIconsDir();   // icons\ next to the program: the pack the installer or the zip brings
 
 }  // namespace b2::paths

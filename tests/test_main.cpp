@@ -14,6 +14,8 @@
 #include "crypto.h"
 #include "devicekey.h"
 #include "fileio.h"
+#include "icons.h"
+#include "paths.h"
 #include "json.h"
 #include "keypad_layout.h"
 #include "pinlock.h"
@@ -871,6 +873,41 @@ static void test_unlock_guard() {
     fs::remove_all(dir);
 }
 
+// ---- the logo pack: the user's folder first, then the one next to the program --------------------------------------------------
+static void test_icon_pack_location() {
+    fs::path home = tempDir("iconhome");
+    fs::path shipped = b2::paths::installedIconsDir();
+    CHECK(!shipped.empty());
+    bool madeShipped = !fs::exists(shipped);
+    fs::create_directories(shipped);
+    SetEnvironmentVariableW(L"B2FA_HOME", home.wstring().c_str());
+    {
+        IconStore none;   // no pack anywhere
+        CHECK(!none.available() || fs::exists(shipped / L"services.json"));
+    }
+    bool hadShipped = fs::exists(shipped / L"services.json");
+    if (!hadShipped) writeFileSynced(shipped / L"services.json", "[]");
+    {
+        IconStore fromProgram;
+        CHECK(fromProgram.available());   // the pack that comes with the program
+    }
+    fs::create_directories(home / L"icons");
+    writeFileSynced(home / L"icons" / L"services.json", "[]");
+    {
+        IconStore fromUser;
+        CHECK(fromUser.available());      // the user's own pack is found too (and wins; both exist now)
+    }
+    fs::remove(home / L"icons" / L"services.json");
+    {
+        IconStore backToProgram;
+        CHECK(backToProgram.available());
+    }
+    if (!hadShipped) fs::remove(shipped / L"services.json");
+    if (madeShipped) fs::remove(shipped);
+    SetEnvironmentVariableW(L"B2FA_HOME", nullptr);
+    fs::remove_all(home);
+}
+
 // ---- PIN, settings, keypad ---------------------------------------------------
 static void test_pin_settings_keypad() {
     PinStore::kdfN = 1ull << 15;   // fast keys for the tests (the bounds allow it)
@@ -992,7 +1029,7 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::string(argv[1]) == "--emit") return emitInteropFiles(argv[2]);
     struct T { const char* name; std::function<void()> fn; } tests[] = {
         {"encodings", test_encodings}, {"secret", test_secret}, {"json", test_json}, {"crypto", test_crypto},
-        {"otp", test_otp},           {"twofas", test_twofas},   {"vault", test_vault}, {"pin, settings, keypad", test_pin_settings_keypad}, {"review fixes", test_review_fixes}, {"audit fixes", test_audit_fixes}, {"binding", test_binding}, {"unlock guard", test_unlock_guard},
+        {"otp", test_otp},           {"twofas", test_twofas},   {"vault", test_vault}, {"pin, settings, keypad", test_pin_settings_keypad}, {"review fixes", test_review_fixes}, {"audit fixes", test_audit_fixes}, {"binding", test_binding}, {"unlock guard", test_unlock_guard}, {"icon pack location", test_icon_pack_location},
         {"python interop", test_python_interop}};
     for (auto& t : tests) {
         g_test = t.name;

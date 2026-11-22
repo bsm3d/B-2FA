@@ -1,7 +1,7 @@
 ; B-2FA installer (Inno Setup 6), driven by tools\build.ps1 (defines AppVersion, SourceDir, OutDir).
 ; The program is one static executable: nothing else to install (no runtime, no DLL).
-; User data (vault, backups, PIN file, settings, logos) lives in %APPDATA%\BSM\B-2FA and is never
-; touched by install, update or uninstall.
+; User data (vault, backups, PIN file, settings) lives in %APPDATA%\BSM\B-2FA and is never touched by
+; install, update or uninstall. The logo pack is installed next to the program (icons\) and removed with it.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -46,6 +46,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 
 [Files]
 Source: "{#SourceDir}\B-2FA.exe"; DestDir: "{app}"; Flags: ignoreversion
+#ifdef IconsDir
+Source: "{#IconsDir}\*"; DestDir: "{app}\icons"; Flags: ignoreversion
+#endif
 Source: "{#SourcePath}\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]

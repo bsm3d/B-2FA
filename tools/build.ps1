@@ -54,7 +54,25 @@ $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFile
         Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $iscc) { throw 'Inno Setup 6 not found (ISCC.exe)' }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
-& $iscc "/DAppVersion=$version" "/DSourceDir=$(Split-Path $exe)" "/DOutDir=$out" (Join-Path $root 'packaging\B-2FA.iss') | Out-Host
+
+# The logo pack (services.json and the PNGs of the 2FAS icon pack) goes next to the program, in the installer and in the zip.
+# It is taken from the folder tools\fetch_icons.ps1 fills, and copied to a staging folder so that nothing else travels with it.
+$packSource = if ($env:B2FA_HOME) { Join-Path $env:B2FA_HOME 'icons' } else { Join-Path $env:APPDATA 'BSM\B-2FA\icons' }
+$packStage = Join-Path $build 'icons-pack'
+Remove-Item -Recurse -Force $packStage -ErrorAction SilentlyContinue
+$isccArgs = @("/DAppVersion=$version", "/DSourceDir=$(Split-Path $exe)", "/DOutDir=$out")
+if (Test-Path -LiteralPath (Join-Path $packSource 'services.json')) {
+    New-Item -ItemType Directory -Force -Path $packStage | Out-Null
+    Copy-Item -LiteralPath (Join-Path $packSource 'services.json') -Destination $packStage
+    Get-ChildItem -LiteralPath $packSource -Filter '*.png' | Where-Object { $_.Name -match '^[0-9a-fA-F-]{36}\.png$' } |
+        ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $packStage }
+    $isccArgs += "/DIconsDir=$packStage"
+    Write-Host ("Logo pack: {0} files from {1}" -f @(Get-ChildItem $packStage).Count, $packSource)
+} else {
+    Write-Warning "No logo pack in $packSource (run tools\fetch_icons.ps1): the installer and the zip are built WITHOUT logos."
+    $packStage = $null
+}
+& $iscc @isccArgs (Join-Path $root 'packaging\B-2FA.iss') | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'installer failed' }
 
 $zip = Join-Path $out "B-2FA-$version-portable.zip"
@@ -63,6 +81,7 @@ Remove-Item -Recurse -Force (Join-Path $build 'portable') -ErrorAction SilentlyC
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 Copy-Item $exe (Join-Path $stage 'B-2FA.exe')
 Copy-Item (Join-Path $root 'LICENSE') (Join-Path $stage 'LICENSE')
+if ($packStage) { Copy-Item -Recurse $packStage (Join-Path $stage 'icons') }
 Remove-Item $zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal
 
