@@ -1,3 +1,8 @@
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Loads and saves the settings file of B-2FA, ignoring wrong types and out-of-range values from the JSON.
+
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #include "settings.h"
 

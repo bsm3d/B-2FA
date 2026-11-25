@@ -1,3 +1,8 @@
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares the crypto API of B-2FA (hashes, HMAC, PBKDF2, scrypt, AES-256-GCM) and the CryptoError exception type.
+
 // B-2FA, cryptography on top of the Windows CNG API (nothing to ship, nothing to install).
 // SHA-1/256/512, HMAC, PBKDF2-HMAC-SHA256, AES-256-GCM, and scrypt (written here: CNG has none).
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later

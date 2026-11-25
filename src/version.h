@@ -1,3 +1,8 @@
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Holds the B-2FA application name, version 1.0.1, author, website and repository constants.
+
 // B-2FA, name and version. Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

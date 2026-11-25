@@ -74,7 +74,9 @@ To report a security problem, open an issue without publishing a working exploit
 
 Everything is in `%APPDATA%\BSM\B-2FA` (or the folder named by `B2FA_HOME`): the vault (`vault.b2fa`), its previous
 version, the last automatic copies in `backups\`, the device key, the PIN file and the settings. To restore a
-backup, copy it over `vault.b2fa`. Installing, updating and uninstalling never touch this folder.
+backup, copy it over `vault.b2fa`. Installing and updating never touch this folder. Uninstalling asks whether to
+remove it: the default is No. Answering Yes deletes the vault and its backups for good, so export a recovery file
+first. A silent uninstall keeps the folder.
 
 ## Logos
 
@@ -90,8 +92,9 @@ Visual Studio 2022 Build Tools (C++), CMake, and [Inno Setup 6](https://jrsoftwa
 
     powershell -ExecutionPolicy Bypass -File tools\build.ps1
 
-It builds the program, runs the tests, then creates the installer and the portable zip in `..\distributions\B-2FA\`
-and prints their SHA-256.
+It builds the program, runs the tests, then creates the installer and the portable zip in `<distributions>\B-2FA\`
+and prints their SHA-256. `<distributions>` is the folder named by `BSM_DISTRIBUTIONS`. Without it, an existing
+`..\..\distributions` folder (two levels above the project) is used, else `out\` in the project.
 
 For the program alone, then the tests:
 

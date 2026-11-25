@@ -1,3 +1,8 @@
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Implements the strict JSON parser and writer used for vaults and backups, enforcing UTF-8 and depth and node limits.
+
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #include "json.h"
 

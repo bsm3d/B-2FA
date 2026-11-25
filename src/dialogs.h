@@ -1,4 +1,8 @@
-// B-2FA, the dialogs: password or PIN entry, add or edit an account, About.
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares the B-2FA dialogs API: password or PIN prompt, account add or edit, and the About box.
+
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

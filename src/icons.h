@@ -1,12 +1,10 @@
-// B-2FA, service logos from a local copy of the 2FAS icon pack. Never touches the network.
-//
-// The pack is the `icons` folder and `services.json` of the 2FAS Android app (github.com/twofasapp). The
-// installer and the portable zip bring it in `icons\` next to B-2FA.exe; a pack in
-// %APPDATA%\BSM\B-2FA\icons (tools\fetch_icons.ps1 puts one there) is used first. Without any pack the
-// app simply draws a letter tile.
-//
-// An account finds its logo like the 2FAS apps do: through the icon collection id stored in the
-// backup, then through its service type id, then (for accounts typed by hand) by an exact name match.
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares IconStore, which finds a local 2FAS icon for each account and falls back to a letter tile when none exists.
+
+// Local 2FAS icon pack only, never the network: `icons\` next to B-2FA.exe, or %APPDATA%\BSM\B-2FA\icons first. No pack: a letter tile.
+// Logo lookup as the 2FAS apps do: icon collection id from the backup, then service type id, then exact name for hand-typed accounts.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

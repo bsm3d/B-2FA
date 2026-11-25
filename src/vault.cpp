@@ -1,3 +1,8 @@
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Implements the encrypted vault: create, unlock, atomic save, automatic backups, master password change and 2FAS export.
+
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #include "vault.h"
 

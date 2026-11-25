@@ -1,3 +1,8 @@
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Implements shared helpers: secret zeroing and comparison, UTF-8 and UTF-16 text conversion, and base64 and hex encoding.
+
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #include "util.h"
 

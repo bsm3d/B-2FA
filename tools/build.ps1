@@ -1,3 +1,8 @@
+# B-2FA
+# © Benoit Saint-Moulin - 2026
+# Version du fichier : 1.0.1
+# Fonction du fichier : Build script that compiles B-2FA with CMake, runs the tests, and makes the installer and the portable zip.
+
 <#
 .SYNOPSIS
   Build B-2FA, run the tests, check the program, and make the installer and the portable zip.
@@ -5,7 +10,8 @@
 .DESCRIPTION
   Needs Visual Studio 2022 Build Tools (C++), CMake, and Inno Setup 6 (only for the installer).
   The program is one static executable: no DLL to ship, no runtime to install.
-  Output goes to ..\distributions\B-2FA\ (next to the project), build files to .\build.
+  Output goes to <distributions>\B-2FA\, where <distributions> is BSM_DISTRIBUTIONS when set, else an existing
+  ..\..\distributions folder, else .\out. Build files go to .\build.
 
 .PARAMETER SkipTests
   Do not run the tests.
@@ -17,7 +23,12 @@ param([switch]$SkipTests, [switch]$NoInstaller)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $root 'build'
-$out = Join-Path (Split-Path -Parent $root) 'distributions\B-2FA'
+# the shared folder is only used when it already exists, so a fresh clone never writes outside the project
+$shared = Join-Path (Split-Path -Parent (Split-Path -Parent $root)) 'distributions'
+$distRoot = if ($env:BSM_DISTRIBUTIONS) { $env:BSM_DISTRIBUTIONS }
+            elseif (Test-Path -LiteralPath $shared -PathType Container) { $shared }
+            else { Join-Path $root 'out' }
+$out = Join-Path $distRoot 'B-2FA'
 $version = (Select-String -Path (Join-Path $root 'src\version.h') -Pattern 'kVersionA = "([0-9.]+)"').Matches[0].Groups[1].Value
 Write-Host "B-2FA $version"
 

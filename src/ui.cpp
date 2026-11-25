@@ -1,3 +1,8 @@
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Implements the Win32 UI toolkit of B-2FA: fonts, DPI scaling, modal dialogs, buttons, labels and the keypad input fields.
+
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #include "ui.h"
 
@@ -434,7 +439,6 @@ int Modal::run() {
     ShowWindow(hwnd_, SW_SHOW);
     if (owner_) EnableWindow(owner_, FALSE);
     SetForegroundWindow(hwnd_);
-    // first field gets the focus
     for (const Field& f : surface_.fields) { SetFocus(f.edit); break; }
     while (!done_) {
         if (!pump(hwnd_)) break;

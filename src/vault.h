@@ -1,14 +1,10 @@
-// B-2FA, the local vault: accounts stored in 2FAS service format, encrypted with a master password.
-//
-// File: vault.b2fa (JSON header + AES-256-GCM payload, key from scrypt, header bound to the
-// ciphertext as associated data). Writes are atomic. The previous version is kept as
-// vault.b2fa.bak. Automatic backups are copies of the vault file (so they keep the scrypt
-// protection), written a few seconds after a change. Only the manual export produces a .2fas
-// file (PBKDF2 with 10 000 iterations, imposed by the 2FAS format), with a long password.
-//
-// Anything that copies the old data (the .bak and the automatic backups) is purged when the
-// master password changes or an account is deleted, so a stale copy cannot outlive the change.
-//
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares the Vault class that stores accounts in an encrypted vault file, with a .bak copy and automatic backups.
+
+// vault.b2fa: JSON header and AES-256-GCM payload, key from scrypt, header bound as associated data. Writes are atomic; the old file is kept as vault.b2fa.bak.
+// Automatic backups are copies of the vault file (still scrypt-protected). Old copies are purged when the master password changes or an account is deleted.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

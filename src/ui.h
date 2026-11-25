@@ -1,5 +1,8 @@
-// B-2FA, the small toolkit under the windows: colours, fonts, flat buttons, text fields with a thin
-// frame, modal windows, and the shuffled on-screen keypad (against keyloggers).
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares the small UI toolkit: colours, fonts, flat buttons, framed text fields, modal windows and the shuffled on-screen keypad.
+
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
@@ -127,10 +130,8 @@ private:
     LRESULT handle(UINT, WPARAM, LPARAM);
 };
 
-// ---- the shuffled keypad -----------------------------------------------------------------------
-// digits: a 3 x 4 digit pad, reshuffled after every key. Otherwise three pages of a full keyboard.
-// always: the pad is always shown and the physical keyboard is locked on the fields (the PIN).
-// Otherwise a link shows or hides the pad and the keyboard is locked while it is shown.
+// Digits: a 3 x 4 digit pad, reshuffled after every key. Otherwise three pages of a full keyboard.
+// always: the pad is always shown and the keyboard is locked on the fields (PIN). Otherwise a link shows or hides it, and the keyboard is locked while shown.
 class SecureInput {
 public:
     SecureInput(HWND parent, std::vector<HWND> edits, bool digits, bool always, int idBase);

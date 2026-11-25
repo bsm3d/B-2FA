@@ -1,4 +1,8 @@
-// B-2FA, Windows DPAPI: data that only this Windows account on this PC can unwrap again.
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares dpapiProtect and dpapiUnprotect, the Windows DPAPI calls that bind data to this account and this PC.
+
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

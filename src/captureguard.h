@@ -1,13 +1,10 @@
-// B-2FA, screen capture protection (Windows 10 build 19041 and later).
-//
-// The window is excluded from every capture the system makes (Print Screen, Snipping Tool, screen
-// sharing, recorders, Windows Recall) with SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE).
-// Windows then leaves the window out of the picture, which would only show whatever is behind it.
-// So a "shield" window sits exactly behind the real one: you never see it (the real window covers
-// it), but a capture shows it instead, with the text "No screen capture allowed".
-//
-// Limits: a photo of the screen, or a capture made by something running in the same session with
-// enough rights to read another process, is not stopped by this.
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares CaptureGuard, which excludes B-2FA windows from screen capture on Windows 10 build 19041 and later using a shield window.
+
+// Windows 10 build 19041 and later: WDA_EXCLUDEFROMCAPTURE hides the window from captures, and a shield window behind it shows "No screen capture allowed".
+// Not stopped: a photo of the screen, or a capture by a process with rights to read other processes.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

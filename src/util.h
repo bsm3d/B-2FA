@@ -1,3 +1,8 @@
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares shared helpers for every module: byte vectors, memory wiping, a self-wiping allocator and the Secret string type.
+
 // B-2FA, small helpers shared by every module: text conversion, base64/base32, random bytes,
 // and a string type that wipes itself (secrets must not stay in memory after use).
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later

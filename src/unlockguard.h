@@ -1,11 +1,10 @@
-// B-2FA, a brake on guessing at the unlock screen (master password and PIN).
-//
-// A few wrong tries are free; after that, each new try is only possible a fixed time after the last wrong one
-// (30 s by default). The count and the time are kept in a small file, so closing and reopening the program does not
-// give the tries back. A correct password resets it.
-//
-// This stops a person at the keyboard (a colleague at an unattended PC). It does not stop a program that has the
-// vault file and tries passwords offline: against that, only the strength of the master password counts.
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares UnlockGuard, the brake on password and PIN guessing: a few free tries, then a fixed delay between tries.
+
+// Free wrong tries, then one try per fixed delay (30 s by default), kept in a file so restarts do not give tries back. A correct password resets it.
+// Stops a person at the keyboard only: a program holding the vault file and guessing offline is stopped by the master password alone.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

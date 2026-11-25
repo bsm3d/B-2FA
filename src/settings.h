@@ -1,3 +1,8 @@
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares the Settings class for the small user preferences: secure keypad, unlock brake limits and recovery export id.
+
 // B-2FA, small user settings (a JSON file next to the vault). Nothing secret goes in here.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once

@@ -1,3 +1,8 @@
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares the file helpers (IoError, FileSig change signature, readFile, synced writes, atomic replace) used by vault code.
+
 // B-2FA, file helpers: durable writes, atomic replacement, a cheap "did someone change it" signature.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once

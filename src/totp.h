@@ -1,7 +1,9 @@
-// B-2FA, one-time password maths (RFC 4226 HOTP, RFC 6238 TOTP, Steam Guard) and otpauth links.
-//
-// Every number that comes from a file or a link goes through validateParams(), so a hostile
-// backup cannot make the maths crash, freeze or silently use another algorithm.
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares the one-time password types and functions (HOTP, TOTP, Steam) plus the otpauth link parsing and parameter validation.
+
+// Every number from a file or a link goes through validateParams(), so a hostile backup cannot crash, freeze or switch algorithm.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

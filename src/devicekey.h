@@ -1,9 +1,10 @@
-// B-2FA, the device key: a random secret wrapped by Windows (DPAPI) and kept in `device.b2fa` next to the vault.
-//
-// A vault bound to this PC mixes this secret into its encryption key, so the vault file alone does not open:
-// not on another PC, not for another Windows account, not even with the right master password. It protects a
-// stolen or copied file (a disk, a backup, a cloud copy). It does not stop a program that runs as you, which
-// can unwrap the secret like B-2FA does.
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares the device key API: a random secret wrapped by DPAPI in device.b2fa, combined with the master password key.
+
+// A random secret wrapped by DPAPI in `device.b2fa`, mixed into the vault key: a copied vault file does not open on another PC or account, even with the right password.
+// It does not stop a program running as the user, which can unwrap the secret like B-2FA does.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

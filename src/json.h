@@ -1,8 +1,10 @@
-// B-2FA, a small JSON document model that keeps what it does not understand.
-//
-// The 2FAS backups and the vault carry fields this program never reads. They must survive a
-// load and save unchanged, so objects keep their keys in insertion order and numbers keep their
-// original text. Parsing is strict (no NaN, no trailing commas, UTF-8 only) and limited in depth.
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares the Json document model that keeps unknown fields, key order and number text so vault and backup files round-trip.
+
+// Keeps what it does not understand: 2FAS backups carry fields this program never reads, and they must survive a load and save.
+// Objects keep key order and numbers keep their text. Parsing is strict (no NaN, no trailing commas, UTF-8 only) and depth-limited.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

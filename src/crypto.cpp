@@ -1,3 +1,8 @@
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Implements the cryptographic primitives on Windows CNG: HMAC, PBKDF2, AES-256-GCM and a hand-written scrypt for the vault.
+
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #include "crypto.h"
 

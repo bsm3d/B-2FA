@@ -1,3 +1,8 @@
+# B-2FA
+# © Benoit Saint-Moulin - 2026
+# Version du fichier : 1.0.1
+# Fonction du fichier : Script that downloads the 2FAS logo pack once from its pinned repository into the B-2FA icons folder.
+
 <#
 .SYNOPSIS
   Install the 2FAS logo pack for B-2FA (run it once, needs git).

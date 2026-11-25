@@ -1,5 +1,9 @@
-// B-2FA core tests: crypto vectors from the RFCs, the vault, the 2FAS format, and files made by
-// the earlier Python prototype. Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Core test program checking crypto vectors, OTP codes, the vault, the 2FAS format, the unlock guard and icon pack lookup.
+
+// Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #include <windows.h>
 
 #include <algorithm>

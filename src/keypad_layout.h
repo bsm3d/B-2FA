@@ -1,14 +1,10 @@
-// B-2FA, the shuffle behind the on-screen keypads. A separate header so the tests can check it.
-//
-// A keylogger records the keys you press. With an on-screen keypad the PIN or password is entered
-// with the mouse, on keys in a random order (a new order every time the pad opens, and after every
-// digit for the PIN pad). The logger sees mouse clicks at screen positions, and because the window is
-// excluded from screen capture it cannot learn which key sits where.
-//
-// This is NOT what KeyScrambler does: that product installs a keyboard driver that encrypts the
-// keystrokes inside the system, which a normal program cannot do. This protects against loggers that
-// only record the keyboard (hooks, hardware keyloggers). It does not protect against malware that
-// reads the window by other means, reads the memory of the process, or reads the text of the field.
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Header with the random key shuffle for on-screen keypads, defeating keyloggers that only record clicks.
+
+// Shuffled on-screen keypads: a new order each time the pad opens and after each PIN digit, so a click logger learns no key positions.
+// Not KeyScrambler: no keyboard driver here. It does not stop malware that reads the window, the process memory or the field text.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

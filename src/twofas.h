@@ -1,15 +1,10 @@
-// B-2FA, read and write 2FAS backup files (.2fas).
-//
-// Format, taken from the 2FAS Android and iOS sources:
-//  - a JSON object with services, groups, updatedAt, schemaVersion, appOrigin...
-//  - plain backup: "services" holds the list.
-//  - encrypted backup: "services" is empty, "servicesEncrypted" and "reference" are strings
-//    "base64(ciphertext+tag):base64(salt):base64(iv)". Key = PBKDF2-HMAC-SHA256(password, salt,
-//    10000 iterations, 32 bytes). Cipher = AES-256-GCM, no associated data. The salt is 256 bytes,
-//    shared by both fields. "reference" decrypts to a fixed string, which proves the password.
-//
-// The 10 000 iterations are imposed by the format: a weak point for short passwords, which is why
-// B-2FA only uses it for the manual export, with a long password.
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Declares the 2FAS backup format API: plain and encrypted read and write, schema version and backup error types.
+
+// 2FAS format, from the Android and iOS sources: plain files hold services; encrypted ones leave services empty and use base64 fields with a shared 256-byte salt.
+// Key is PBKDF2-HMAC-SHA256 with 10 000 iterations (imposed by the format, weak for short passwords), AES-256-GCM, no associated data.
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

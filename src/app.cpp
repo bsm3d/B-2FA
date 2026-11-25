@@ -1,3 +1,8 @@
+// B-2FA
+// © Benoit Saint-Moulin - 2026
+// Version du fichier : 1.0.1
+// Fonction du fichier : Main window of B-2FA: unlock screen, account list, and every action such as adding accounts, PIN setup and locking.
+
 // Copyright (C) 2026 Benoit Saint-Moulin. SPDX-License-Identifier: GPL-3.0-or-later
 #include "app.h"
 
@@ -158,7 +163,6 @@ private:
     void toggleCaptureBlock();
     void tick();
 
-    // helpers
     void copyToClipboard(const std::string& text, const std::wstring& label);
     void wipeClipboard();
     void fail(const std::exception& e);
@@ -883,7 +887,6 @@ void App::paintList(HWND list) {
             SetTextColor(mem, kFg);
             DrawTextW(mem, L"Next", -1, &nb, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         }
-        // hairline between accounts
         RECT sep{0, top + rh - 1, rc.right, top + rh};
         HBRUSH hl = CreateSolidBrush(kHairline);
         FillRect(mem, &sep, hl);
